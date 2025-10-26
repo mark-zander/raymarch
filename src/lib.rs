@@ -7,44 +7,6 @@ use winit::{
     window::{Window, WindowId},
 };
 
-// My traits programming didn't work, required giving a traits designation
-// in main for App::default which I didn't know how to do. Next attempt
-// will be with modules for different tests. Each render will be in a
-// different module for that test
-
-// Couldn't get traits to work.
-// 1. App::default needed more traits specified. For possible solution see:
-//    https://users.rust-lang.org/t/the-method-get-exists-but-the-following-trait-bounds-were-not-satisfied/40050
-// 2. Render::new not allowed to be async in trait.
-
-// pub trait Render {
-//     async fn new(window: Arc<Window>) -> Self;
-//     fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) { }
-//     fn render(&mut self) { }
-// }
-
-// // Opens an empty window
-// pub struct RenderNot;
-
-// impl Render for RenderNot {
-//     async fn new(window: Arc<Window>) -> Self { Self{} }
-//     // fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) { }
-//     // fn render(&self) { }
-// }
-
-// // Display colored surface in window
-// pub struct RenderSurf {
-//     gpu: Gpu,
-// }
-
-// impl Render for RenderSurf {
-//     async fn new(window: Arc<Window>) -> Self {
-//         Self{ gpu: Gpu::new(window).await, } }
-//     fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-//         self.gpu.resize(size);
-//     }
-// }
-
 // Event driven window handler for this application
 #[derive(Default)]
 pub struct App {
@@ -68,6 +30,7 @@ impl ApplicationHandler for App {
 
             // Done in main? Better to have it here?
             // env_logger::init();
+
             let renderer = pollster::block_on(
                 Renderer::new(window_handle.clone())
             );
@@ -133,7 +96,7 @@ impl Gpu {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor::default(),
-                None, // Trace path
+                // None, // Trace path
             )
             .await
             .unwrap();
@@ -231,6 +194,7 @@ impl Renderer {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &texture_view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
@@ -281,7 +245,7 @@ impl Scene {
         renderpass.set_pipeline(&self.pipeline);
         // If you wanted to call any drawing commands, they would go here.
         renderpass.set_pipeline(&self.pipeline); // 2.
-        renderpass.draw(0..3, 0..1); // 3.
+        renderpass.draw(0..6, 0..1); // 3.
     
 
         // renderpass.set_bind_group(0, &self.uniform.bind_group, &[]);
