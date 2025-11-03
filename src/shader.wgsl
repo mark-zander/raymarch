@@ -204,6 +204,8 @@ fn phong(v: vec3f, n: vec3f, dir: vec3f, eye: vec3f) -> vec3f {
 const epsilon = 0.001;
 const zfar = -1.0;      // clip range for z
 const znear = 1.0;
+const zscreen = 1.0;    // z location of the screen
+const zeye = 1.0;       // eye location relative to the screen
 
 const background = Result(-1.0, black);
 
@@ -247,8 +249,8 @@ fn ray_march(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let xyz: vec3f = vec3f(in.xy, znear);
-    let eye = vec3f(0.0, 0.0, 2.0);
+    let xyz: vec3f = vec3f(in.xy, zscreen);
+    let eye = vec3f(0.0, 0.0, zeye + zscreen);
     let dir = normalize(eye - xyz);
     let result = ray_march(xyz, eye, dir);
     // let result = ray_march(eye, dir);
