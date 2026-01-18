@@ -1,28 +1,13 @@
-// // Vertex shader
+//  Start from github.com/electricsquare/raymarching-workshop
+//  This is an glsl code meant to work with shadertoy so it needs to be
+//  converted into wgsl.
 
-// struct VertexOutput {
-//     @builtin(position) clip_position: vec4f,
-// };
 
-// @vertex
-// fn vs_main(
-//     @builtin(vertex_index) in_vertex_index: u32,
-// ) -> VertexOutput {
-//     var out: VertexOutput;
-//     let x = f32(1 - i32(in_vertex_index)) * 0.5;
-//     let y = f32(i32(in_vertex_index & 1u) * 2 - 1) * 0.5;
-//     out.clip_position = vec4f(x, y, 0.0, 1.0);
-//     return out;
-// }
-
-// // Fragment shader
-
-// @fragment
-// fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-//     return vec4f(0.3, 0.2, 0.1, 1.0);
-// }
-
-// Vertex shader
+//////////////////////////////////////////////////////////////////////////
+//
+//  Vertex shader - normalizes screen coordinates in xy
+//
+//////////////////////////////////////////////////////////////////////////
 
 struct VertexOutput {
     // screen position in pixels from upper left
@@ -69,62 +54,11 @@ fn vs_main(
     return out;
 }
 
-
-
-@fragment
-fn fs_fill(in: VertexOutput) -> @location(0) vec4f {
-    let x = in.xy.x;
-    let y = in.xy.y;
-
-    var r = abs(x);
-    var g = 0.0;
-    var b = 0.0;
-    if y > 0 {
-        g = y;
-    } else {
-        b = -y;
-    }
-
-    return vec4f(r, g, b, 1.0);
-}
-
-// @fragment
-// fn fs_sdf(in: VertexOutput) -> @location(0) vec4f {
-//     let epsilon = 6.0E-8;
-//     var dnext: Result = Result(0.0, vec4f(0.0));
-//     var hit: vec3f = vec3f(0.0, 0.0, 0.0);
-//     var color: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-//     var count: u32 = 0u;
-//     for (var z: f32 = 1.0; z >= -1.0; z -= dnext.dist) {
-//         dnext = shape6(vec3f(in.xy, z));
-//         if abs(dnext.dist) <= epsilon {
-//             // z -= znext;
-//             hit = vec3f(in.xy, z);
-//             // color = vec4f((z + 1.0) / 2.0, 1.0, 1.0, 1.0);
-//             color = dnext.color; // + (z + 1.0) / 2.0;
-//             break;
-//         }
-//         count++;
-//     }
-//     return color;
-// }
-
-// alias ptrMaterial = ptr<private, Material>;
-
-// struct Result {
-//     dist: f32,
-//     aMaterial: ptr<private, Material>,
-// }
-
-// var<private> black =   Material(vec4f(0.0, 0.0, 0.0, 1.0));    // black
-// var<private> red =     Material(vec4f(1.0, 0.0, 0.0, 1.0));    // red
-// var<private> green =   Material(vec4f(0.0, 1.0, 0.0, 1.0));    // green
-// var<private> blue =    Material(vec4f(0.0, 0.0, 1.0, 1.0));    // blue
-
-// const black = 0;
-// const red = 1;
-// const green = 2;
-// const blue = 3;
+//////////////////////////////////////////////////////////////////////////
+//
+//  Fragment shader - displays color for each pixel and shape
+//
+//////////////////////////////////////////////////////////////////////////
 
 // Material could be returned using function argument pointers if
 // performance is an issue.
@@ -137,162 +71,151 @@ struct Result {
     aMaterial: Material,
 }
 
-const black = Material(vec4f(0.0, 0.0, 0.0, 1.0));    // black
-const red = Material(vec4f(1.0, 0.0, 0.0, 1.0));    // red
-const green = Material(vec4f(0.0, 1.0, 0.0, 1.0));    // green
-const blue = Material(vec4f(0.0, 0.0, 1.0, 1.0));    // blue
-
-// get gradient in the world
-const grad_step = 0.02;
-fn gradient(pos: vec3f) -> vec3f {
-	let dx = vec3f( grad_step, 0.0, 0.0 );
-	let dy = vec3f( 0.0, grad_step, 0.0 );
-	let dz = vec3f( 0.0, 0.0, grad_step );    
-	return normalize (
-		vec3f(
-			theshape( pos + dx ).dist - theshape( pos - dx ).dist,
-			theshape( pos + dy ).dist - theshape( pos - dy ).dist,
-			theshape( pos + dz ).dist - theshape( pos - dz ).dist			
-		)
-	);
-}
-
-fn fresnel(F0: vec3f, h: vec3f, l: vec3f) -> vec3f {
-	return F0 + ( 1.0 - F0 ) * pow( clamp( 1.0 - dot( h, l ), 0.0, 1.0 ), 5.0 );
-}
-
-// phong shading
-fn shading(v: vec3f, n: vec3f, dir: vec3f, eye: vec3f) -> vec3f {
-	// ...add lights here...
-	
-	let shininess = 16.0;
-	
-	var fin = vec3( 0.0 );
-	
-	let refl = reflect( dir, n );
-    
-    let Ks = vec3( 0.5 );
-    let Kd = vec3( 1.0 );
-	
-	// light 0
-	{
-		let light_pos   = vec3( 20.0, 20.0, 20.0 );
-		let light_color = vec3( 1.0, 0.7, 0.7 );
-	
-		let vl = normalize( light_pos - v );
-	
-		let diffuse  = Kd * vec3( max( 0.0, dot( vl, n ) ) );
-		var specular = vec3( max( 0.0, dot( vl, refl ) ) );
-		
-        let F = fresnel( Ks, normalize( vl - dir ), vl );
-		specular = pow( specular, vec3( shininess ) );
-		
-		fin += light_color * mix( diffuse, specular, F ); 
-	}
-    // fin += texture( iChannel0, ref ).rgb * fresnel( Ks, n, -dir );
-    
-	return fin;
-}
-
-fn phong(v: vec3f, n: vec3f, dir: vec3f, eye: vec3f) -> vec3f {
-    let light_pos   = vec3( 20.0, 20.0, 20.0 );
-    let light_color = vec3( 1.0, 0.7, 0.7 );
-    return light_pos;
-}
-
-// fragment shader, perspective signed distance function
-const epsilon = 0.001;
-const zfar = -1.0;      // clip range for z
-const znear = 1.0;
-const zscreen = 1.0;    // z location of the screen
-const zeye = 1.0;       // eye location relative to the screen
+const black = Material(vec4f(0.0, 0.0, 0.0, 1.0));      // black
+const red =   Material(vec4f(0.2, 0.0, 0.0, 1.0));      // red
+const green = Material(vec4f(0.0, 0.2, 0.0, 1.0));      // green
+const blue =  Material(vec4f(0.0, 0.0, 0.2, 1.0));      // blue
 
 const background = Result(-1.0, black);
 
-// fn ray_march(in: VertexOutput) -> vec4f {
+fn calcNormal(pos: vec3f) -> vec3f {
+	// Center sample
+    let c = theShape(pos).dist;
+	// Use offset samples to compute gradient / normal
+    var eps_zero: vec2f = vec2f(0.001, 0.0);
+    return normalize(vec3f(
+        theShape(pos + eps_zero.xyy).dist,
+        theShape(pos + eps_zero.yxy).dist,
+        theShape(pos + eps_zero.yyx).dist) - c);
+}
+
+// get gradient in the world
+// const grad_step = 0.02;
+// fn calcNormal(pos: vec3f) -> vec3f {
+// 	let dx = vec3f( grad_step, 0.0, 0.0 );
+// 	let dy = vec3f( 0.0, grad_step, 0.0 );
+// 	let dz = vec3f( 0.0, 0.0, grad_step );    
+// 	return normalize (
+// 		vec3f(
+// 			theShape( pos + dx ).dist - theShape( pos - dx ).dist,
+// 			theShape( pos + dy ).dist - theShape( pos - dy ).dist,
+// 			theShape( pos + dz ).dist - theShape( pos - dz ).dist			
+// 		)
+// 	);
+// }
+
+const maxSteps = 128;
+const epsilon = 0.001;
+
 fn ray_march(
-    xyz: vec3f,     // virtual screen position
-    eye: vec3f,     // camera location
-    dir: vec3f,     // ray direction
+    rayOrigin: vec3f,     // camera location
+    rayDir: vec3f,     // ray direction
 ) -> Result {
-    let diff = eye - xyz;
-    var t = length(diff);       // total depth
-    // var t = 0.0;
-    var dt = 0.0;               // change in depth
-    var d = 0.0;
+    var t = 1.0;                // total depth
 
-    for (var i = 0; i < 128; i++) {
-        let v : vec3f = eye - t * dir;
-        if v.z < zfar { break; }  // past clip range
-        d = theshape(v).dist;
-        if d < epsilon { break; }
-        dt = min(abs(d), 0.1);
-        t += dt;
+    for (var i = 0; i < maxSteps; i++) {
+        var res = theShape(rayOrigin - rayDir * t);
+        if res.dist < epsilon * t { return Result(t, res.aMaterial); }
+        t += res.dist;
     }
 
-    if d >= epsilon { return background; }
+    return background;
+}
 
-    t -= dt;
-    var s: Result;
-    for (var i = 0; i < 4; i++) {
-        dt *= 0.5;
-        let v = eye - dir * (t + dt);
-        s = theshape(v);
-        if s.dist >= epsilon {
-            t += dt;
-        }
+const iTime = pi * 0.25;
+
+fn render(rayOrigin: vec3f, rayDir: vec3f) -> vec3f {
+    var color: vec3f;
+	var t = ray_march(rayOrigin, rayDir);
+
+    // vec3 L = normalize(vec3(sin(iTime)*1.0, cos(iTime*0.5)+0.5, -0.5));
+    var L = normalize(vec3(sin(iTime)*1.0, cos(iTime*0.5)+0.5, -0.5));
+
+	if t.dist == -1.0 {
+        // color = vec3(0.30, 0.36, 0.60) - rayDir.y * 0.4;
+        color = t.aMaterial.color.xyz;
+    } else {   
+        // vec3 pos = rayOrigin + rayDir * t;
+        var pos = rayOrigin + rayDir * t.dist;
+        // vec3 N = calcNormal(pos);
+        var n = calcNormal(pos);
+
+        // vec3 objectSurfaceColour = vec3(0.4, 0.8, 0.1);
+        var objectSurfaceColour = t.aMaterial.color.xyz;
+        // L is vector from surface point to light, N is surface normal. N and L must be normalized!
+        var NoL = max(dot(n, L), 0.0);
+        var LDirectional = vec3f(1.80,1.27,0.99) * NoL;
+        var LAmbient = vec3f(0.03, 0.04, 0.1);
+        var diffuse = objectSurfaceColour * (LDirectional + LAmbient);
+		
+        color = diffuse;
+        
+        
+        var shadow = 0.0f;
+        var shadowRayOrigin = pos + n * 0.01;
+        var shadowRayDir = L;
+        t = ray_march(shadowRayOrigin, shadowRayDir);
+        if t.dist >= -1.0 { shadow = 1.0; }
+        color = mix(color, color*0.8, shadow);
+        
+        // Visualize normals:
+        // color = n * vec3(0.5) + vec3(0.5);
     }
+    
+    return color;
+}
 
+fn getCameraRayDir(uv: vec2f, camPos: vec3f, camTarget: vec3f) -> vec3f
+{
+	let camForward: vec3f = normalize(camPos - camTarget);
+	let camRight: vec3f = normalize(cross(vec3(0.0, 1.0, 0.0), camForward));
+	let camUp: vec3f = normalize(cross(camForward, camRight));
 
-    return Result(t, s.aMaterial);
+    // fPersp controls the camera's field of view. Try changing it!
+    let fPersp = 1.0f;
+	let vDir: vec3f =
+        // normalize(uv.x * camRight + uv.y * camUp + camForward * fPersp);
+        normalize(-uv.x * camRight - uv.y * camUp + camForward * fPersp);
+
+	return vDir;
+}
+
+const zscreen = 1.0;
+
+fn camera_dir(uv: vec2f, camPos: vec3f, camTarget: vec3f) -> vec3f {
+    let xyz = vec3f(uv, zscreen);
+    let dir = normalize(camPos - xyz);
+    return dir;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let xyz: vec3f = vec3f(in.xy, zscreen);
-    let eye = vec3f(0.0, 0.0, zeye + zscreen);
-    let dir = normalize(eye - xyz);
-    let result = ray_march(xyz, eye, dir);
-    // let result = ray_march(eye, dir);
-
-    var pos = eye - result.dist * dir;
-    var n = normalize(gradient(pos));
-    var col: vec3f;
-    // let color = shading(pos, n, dir, eye);
-    if result.dist == -1.0 {
-        col = vec3f(0.30, 0.36, 0.60) - dir.y * 0.4;
-    } else {
-        let shapeColor = vec3f(0.4, 0.8, 0.1);
-        let l = normalize(vec3(1.0, 0.5, -0.5));
-        // L is vector from surface point to light, N is surface normal. N and L must be normalized!
-        let nol = max(dot(n, l), 0.0);
-        let lDir = vec3(1.80,1.27,0.99) * nol;
-        let lAmbient = vec3(0.03, 0.04, 0.1);
-        let diffuse = shapeColor * (lDir + lAmbient);
-		
-        col = diffuse;
-        
-        var shadow = 0.0;
-        let shadowOrigin = pos + n * 0.01;
-        let shadowDir = l;
-        let t = ray_march(shadowOrigin, shadowOrigin, shadowDir).dist;
-        if t >= -1.0 { shadow = 1.0; }
-        col = mix(col, col*0.8, shadow);    }
-
-    // let color = n * vec3(0.5) + vec3(0.5);
-    return vec4(pow(col, vec3(1.0/1.2)), 1.0);
+    var camPos = vec3f(0, 0, 2);
+    // var at = vec3f(0, 0, 1);
+    var at = vec3f(0, 0, 0);
+    
+    // vec2 uv = normalizeScreenCoords(fragCoord);
+    var rayDir = getCameraRayDir(in.xy, camPos, at);  
+    // var rayDir = camera_dir(in.xy, camPos, at);  
+    
+    var color = render(camPos, rayDir);
+    
+    color = pow(color, vec3f(0.4545)); // Gamma correction (1.0 / 2.2)
+    
+    return vec4f(color, 1.0); // Output to screen
 }
 
-//  Ray direction
-//  znear = +1
-//  zfar = -1
-// fn ray_dir(eye: vec3f, fov: f32, aspect: f32) -> vec3f {
 
-// }
+//////////////////////////////////////////////////////////////////////////
+//
+//  Shapes and shape operators
+//
+//////////////////////////////////////////////////////////////////////////
 
 const pi: f32 = 3.14159265359;
 
-fn theshape(p: vec3f) -> Result { return shape7(p); }
+// fn theShape(p: vec3f) -> Result { return Result(sphere(p, 1), blue); }
+fn theShape(p: vec3f) -> Result { return shape7(p); }
 
 fn shape1(p: vec3f) -> Result {
     let p2 = (translate( 0.25,  0.0,  0.0) * vec4(p, 1.0)).xyz;
@@ -304,8 +227,8 @@ fn shape1(p: vec3f) -> Result {
 }
 
 fn shape7(p: vec3f) -> Result {
-    let p2 = (translate( 0.5,  0.0,  0.5) * vec4(p, 1.0)).xyz;
-    let p1 = (translate(-0.5,  0.0, -0.5) * vec4(p, 1.0)).xyz;
+    let p1 = (translate(-0.5, -0.5, -0.5) * vec4(p, 1.0)).xyz;
+    let p2 = (translate( 0.5,  0.5,  0.5) * vec4(p, 1.0)).xyz;
     return unions(
         Result(sphere(p1, 0.5), red),
         Result(sphere(p2, 0.5), green)
@@ -351,6 +274,7 @@ fn shape6(p: vec3f) -> Result {
 // distance from sphere
 fn sphere(p: vec3f, radius: f32) -> f32 {
     return length(p) - radius;
+    // return -radius - length(p);
 }
 
 // distance from a box
@@ -431,40 +355,44 @@ fn second(c1: Result, c2: Result) -> Result { return c2; }
 // fn intersect(d1: f32, d2: f32) -> f32 { return max(d1, d2); }
 // fn subtract(d1: f32, d2: f32) -> f32 { return max(-d1, d2); }
 
-// matrix operations
+// matrix operations - inverted
 fn translate(x: f32, y: f32, z: f32) -> mat4x4<f32> {
     return mat4x4(
         1.0, 0.0, 0.0, 0.0,
         0.0, 1.0, 0.0, 0.0,
         0.0, 0.0, 1.0, 0.0,
-        x,   y,   z,   1.0
+        -x,   -y,   -z,   1.0
     );
 }
 
 fn rotx(theta: f32) -> mat4x4<f32> {
+    let inv_theta = -theta;
     return mat4x4(
         1.0, 0.0,        0.0,         0.0,
-        0.0, cos(theta), -sin(theta), 0.0,
-        0.0, sin(theta), cos(theta),  0.0,
+        0.0, cos(inv_theta), -sin(inv_theta), 0.0,
+        0.0, sin(inv_theta), cos(inv_theta),  0.0,
         0.0, 0.0,        0.0,         1.0
     );
 }
 
 fn roty(theta: f32) -> mat4x4<f32> {
+    let inv_theta = -theta;
     return mat4x4(
-        cos(theta),  0.0, sin(theta), 0.0,
+        cos(inv_theta),  0.0, sin(inv_theta), 0.0,
         0.0,         1.0, 0.0,        0.0,
-        -sin(theta), 0.0, cos(theta), 0.0,
+        -sin(inv_theta), 0.0, cos(inv_theta), 0.0,
         0.0,         0.0, 0.0,        1.0
     );
 }
 
 fn rotz(theta: f32) -> mat4x4<f32> {
+    let inv_theta = -theta;
     return mat4x4(
-        cos(theta), -sin(theta), 0.0, 0.0,
-        sin(theta), cos(theta),  0.0, 0.0,
+        cos(inv_theta), -sin(inv_theta), 0.0, 0.0,
+        sin(inv_theta), cos(inv_theta),  0.0, 0.0,
         0.0,        0.0,         1.0, 0.0,
         0.0,        0.0,         0.0, 1.0
     );
 }
+
 
