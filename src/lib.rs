@@ -1,6 +1,5 @@
 use std::sync::Arc;
-mod uniform;
-use crate:: uniform::*;
+pub mod uniform;
 
 use winit::{
     application::ApplicationHandler,
@@ -9,14 +8,8 @@ use winit::{
     window::{Window, WindowId},
 };
 
-// Should these be an enum in uniform.rs? No lookups needed.
-// Errors at compile time.
-const BINDINGS: &str = "bindings";
-// const SCALARS: &str = "scalars";
-// const TEXTURES: &str = "textures";
+use wgpu::util::DeviceExt;
 
-const SCREEN_X: &str = "screen_x";
-const SCREEN_Y: &str = "screen_y";
 
 // Event driven window handler for this application
 #[derive(Default)]
@@ -25,8 +18,6 @@ pub struct App {
     renderer: Option<Renderer>,
     // last_size: winit::dpi::PhysicalSize<u32>,
 }
-
-
 
 impl ApplicationHandler for App {
 
@@ -102,7 +93,17 @@ impl Gpu {
         window: Arc<Window>,
         // bindings: &mut PipelineBindGroups
     ) -> Gpu {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        // let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            #[cfg(not(target_arch = "wasm32"))]
+            backends: wgpu::Backends::PRIMARY,
+            #[cfg(target_arch = "wasm32")]
+            backends: wgpu::Backends::GL,
+            flags: Default::default(),
+            memory_budget_thresholds: Default::default(),
+            backend_options: Default::default(),
+            display: None,
+        });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
@@ -179,7 +180,7 @@ pub struct Renderer {
     gpu: Gpu,
     scene: Scene,
     size: winit::dpi::PhysicalSize<u32>,
-    bindings: PipelineBindGroups,
+    // bindings: PipelineBindGroups,
 
     // depth_texture_view: wgpu::TextureView,
 }
@@ -188,45 +189,75 @@ impl Renderer {
     async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let gpu = Gpu::new(window).await;
-        let mut bindings = PipelineBindGroups::new(BINDINGS);
-        Self::init_bindings(&mut bindings, &size, &gpu.device);
+        // let mut bindings = PipelineBindGroups::new(BINDINGS);
+        // Self::init_bindings(&mut bindings, &size, &gpu.device);
         let scene = Scene::new(
-            &gpu.device, gpu.surface_format, &mut bindings);
+//            &gpu.device, gpu.surface_format, &mut bindings);
+            &gpu.device, gpu.surface_format, &size);
         Self {
             gpu,
             scene,
             size,
-            bindings,
+            // bindings,
         }
     }
 
     fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         self.size = size;
         self.gpu.resize(size);
+        self.scene.resize(&self.gpu.queue, size);
     }
 
-    fn init_bindings(
-        bindings: &mut PipelineBindGroups,
-        size: &winit::dpi::PhysicalSize<u32>,
-        device: &wgpu::Device,
-    ) {
-         // Set the window size
-        bindings.new_uniform(
-            SCREEN_X, GroupIndex::Scalars, size.width as i32, device,
-        );
-        bindings.new_uniform(
-            SCREEN_Y, GroupIndex::Scalars, size.height as i32, device,
-        );
+    // fn init_bindings(
+    //     bindings: &mut PipelineBindGroups,
+    //     size: &winit::dpi::PhysicalSize<u32>,
+    //     device: &wgpu::Device,
+    // ) {
+    //      // Set the window size
+    //     bindings.new_uniform(
+    //         SCREEN_X, GroupIndex::Scalars, size.width as i32, device,
+    //     );
+    //     bindings.new_uniform(
+    //         SCREEN_Y, GroupIndex::Scalars, size.height as i32, device,
+    //     );
 
-    }
+    // }
 
-    fn render(&mut self) {
+    fn render(&mut self) -> anyhow::Result<()> {
         // Create texture view
-        let surface_texture = self
-            .gpu
-            .surface
-            .get_current_texture()
-            .expect("failed to acquire next swapchain texture");
+        // let surface_texture = self
+        //     .gpu
+        //     .surface
+        //     .get_current_texture()
+        //     .expect("failed to acquire next swapchain texture");
+        // self.scene.update(&self.gpu.queue);
+
+        let surface_texture = match self.gpu.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(surface_texture) =>
+                surface_texture,
+            wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) =>
+            {
+                self.gpu.surface.configure(
+                    &self.gpu.device, &self.gpu.surface_config);
+                surface_texture
+            }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => {
+                // Skip this frame
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.gpu.surface.configure(
+                    &self.gpu.device, &self.gpu.surface_config);
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                // You could recreate the devices and all resources
+                // created with it here, but we'll just bail
+                anyhow::bail!("Lost device");
+            }
+        };
         let texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor {
@@ -253,10 +284,12 @@ impl Renderer {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         self.scene.render(
-            &mut renderpass, &self.gpu.device, &mut self.bindings);
+//            &mut renderpass, &self.gpu.device, &mut self.bindings);
+            &mut renderpass, &self.gpu.device);
 
         // End the renderpass.
         drop(renderpass);
@@ -265,28 +298,114 @@ impl Renderer {
         self.gpu.queue.submit([encoder.finish()]);
         // self.gpu.window.pre_present_notify();
         surface_texture.present();
+
+        Ok(())
     }
 
 }
 
+// Should these be an enum in uniform.rs? No lookups needed.
+// Errors at compile time.
+const UNIFORMS: &str = "uniforms";
+// const SCALARS: &str = "scalars";
+// const TEXTURES: &str = "textures";
+
+const SCREEN_X: &str = "screen_x";
+const SCREEN_Y: &str = "screen_y";
+
+// static mut screen_x: u32 = 100;
+// static mut screen_y: u32 = 100;
+
+
 struct Scene {
     pub pipeline: wgpu::RenderPipeline,
-    // PipeLineBindGroups here?
+    // bind_groups: uniform::PipelineBindGroups<'a>,
+    screen_x: u32,
+    screen_y: u32,
+    x_buffer: wgpu::Buffer,
+    y_buffer: wgpu::Buffer,
+    uniform_group_layout: wgpu::BindGroupLayout,
+    uniform_group: wgpu::BindGroup,
 }
 
 impl Scene {
     pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
-        bindings: &mut PipelineBindGroups,
+        size: &winit::dpi::PhysicalSize<u32>,
+        // bindings: &mut PipelineBindGroups,
     ) -> Self {
         //  vertex buffer
         //  index buffer
         //  unifrom
         //  model
+        let screen_x = size.width;
+        let screen_y = size.height;
+
+        let x_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(SCREEN_X),
+            contents: bytemuck::cast_slice(&[screen_x]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let y_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(SCREEN_Y),
+            contents: bytemuck::cast_slice(&[screen_y]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_group_layout =
+            device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("uniform_group_layout"),
+            });
+
+        let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &uniform_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: x_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: y_buffer.as_entire_binding(),
+                },
+            ],
+            label: Some("uniform_group"),
+        });
+
         let pipeline = Self::create_pipeline(
-            device, surface_format, bindings);
+            device, surface_format, &uniform_group_layout);
         Self {
+            screen_x,
+            screen_y,
+            x_buffer,
+            y_buffer,
+            uniform_group_layout,
+            uniform_group,
             pipeline,
         }
     }
@@ -296,22 +415,42 @@ impl Scene {
         &'rpass self,
         renderpass: &mut wgpu::RenderPass<'rpass>,
         device: &wgpu::Device,
-        pipeline_bind_groups: &mut PipelineBindGroups,
+        // pipeline_bind_groups: &mut PipelineBindGroups,
     ) {
-        print!("{}", pipeline_bind_groups.make_wgsl());
+        // print!("{}", pipeline_bind_groups.make_wgsl());
         renderpass.set_pipeline(&self.pipeline);
-        pipeline_bind_groups.set_render_pass(device, renderpass);
+//        pipeline_bind_groups.set_render_pass(device, renderpass);
+        renderpass.set_bind_group(0, &self.uniform_group, &[]);
         // If you wanted to call any drawing commands, they would go here.
         renderpass.set_pipeline(&self.pipeline); // 2.
         renderpass.draw(0..6, 0..1); // 3.
     
 
-        // renderpass.set_bind_group(0, &self.uniform.bind_group, &[]);
 
         // renderpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         // renderpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         // renderpass.draw_indexed(0..(INDICES.len() as _), 0, 0..1);
+    }
+
+    // fn update(&mut self) {
+    pub fn resize(
+        &mut self,
+        queue: &wgpu::Queue,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) {
+        self.screen_x = size.width;
+        self.screen_y = size.height;
+        queue.write_buffer(
+            &self.x_buffer,
+            0,
+            bytemuck::cast_slice(&[self.screen_x])
+        );
+        queue.write_buffer(
+            &self.y_buffer,
+            0,
+            bytemuck::cast_slice(&[self.screen_y])
+        );
     }
 
     // pub fn update(&mut self, queue: &wgpu::Queue, aspect_ratio: f32, delta_time: f32) {
@@ -341,19 +480,24 @@ impl Scene {
     fn create_pipeline(
         device: &wgpu::Device,
         surface_config: wgpu::TextureFormat,
-        pipeline_bind_groups: &mut PipelineBindGroups,
+        // x_bind_group: &wgpu::BindGroup,
+        uniform_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(
             wgpu::include_wgsl!("shader.wgsl"));
 
+//        let render_pipeline_layout =
+//              pipeline_bind_groups.pipeline_layout(device);
         let render_pipeline_layout =
-              pipeline_bind_groups.pipeline_layout(device);
-        // let render_pipeline_layout =
-        //     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        //         label: Some("Render Pipeline Layout"),
-        //         bind_group_layouts: &[],
-        //         push_constant_ranges: &[],
-        //     });
+            device.create_pipeline_layout(
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some("Render Pipeline Layout"),
+                    bind_group_layouts: &[
+                        Some(uniform_group_layout),
+                    ],
+                    immediate_size: 0,
+                }
+            );
 
         // let render_pipeline =
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -393,7 +537,7 @@ impl Scene {
                 mask: !0, // 3.
                 alpha_to_coverage_enabled: false, // 4.
             },
-            multiview: None, // 5.
+            multiview_mask: None, // 5.
             cache: None, // 6.
         })
 

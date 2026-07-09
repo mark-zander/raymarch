@@ -285,7 +285,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         col = mix(col, col*0.8, shadow);    }
 
     // let color = n * vec3(0.5) + vec3(0.5);
-    return vec4(pow(col, vec3(1.0/1.2)), 1.0);
+    // return vec4(pow(col, vec3(1.0/1.2)), 1.0);
+    return vec4(col, 1.0);
 }
 
 //  Ray direction

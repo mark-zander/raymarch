@@ -4,6 +4,331 @@ use num_traits::cast::ToPrimitive;
 
 use enum_map::{enum_map, Enum, EnumMap};
 
+// @group(0) @binding(0) // 1.
+// var<uniform> screen_x: u32;
+// @group(0) @binding(1) // 1.
+// var<uniform> screen_y: u32;
+// @group(0) @binding(2) // 1.
+// var<uniform> timer: u64;
+
+
+struct UniformDesc {
+    groupn: u32,
+    bindingn: u32,
+    wgsl_decl: String,
+    usages: wgpu::BufferUsages,
+}
+
+pub struct Binding<Abstract> {
+    name: String,
+    group: u32,
+    binding: u32,
+    other: Abstract,
+}
+
+pub struct Uniform {
+    name: String,
+    binding: u32,
+    buffer: wgpu::Buffer,
+}
+
+impl Uniform {
+    pub fn new<T: bytemuck::NoUninit> (
+        name: &str,
+        binding: u32,
+        data: &[T],
+        device: &wgpu::Device,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            binding,
+            buffer: device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(name),
+                    contents: bytemuck::cast_slice(data),
+                    usage: wgpu::BufferUsages::UNIFORM |
+                        wgpu::BufferUsages::COPY_DST,
+                }
+            )
+        }
+    }
+    fn create_layout(&self) -> wgpu::BindGroupLayoutEntry {
+        wgpu::BindGroupLayoutEntry {
+            binding: self.binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }
+    }
+
+    fn create_groupie(&self) -> wgpu::BindGroupEntry {
+        wgpu::BindGroupEntry {
+            binding: self.binding,
+            resource: self.buffer.as_entire_binding(),
+        }
+    }
+}
+
+pub struct Auniform {
+    pub name: String,
+    pub n: u32,
+    pub data: u32,
+    // buffer: wgpu::Buffer,
+}
+
+pub struct AGroup {
+    pub name: String,
+    pub n: u32,
+    pub bindings: Vec<Auniform>,
+}
+
+pub struct Group<'a> {
+    name: String,
+    group: u32,
+    bindings: &'a [Uniform],
+    layout_entries: Vec<wgpu::BindGroupLayoutEntry>,
+    layout: wgpu::BindGroupLayout,
+    layout_opt: Option<&'a wgpu::BindGroupLayout>,
+    group_entries: Vec<wgpu::BindGroupEntry<'a>>,
+}
+
+impl<'a> Group<'a> {
+    pub fn new(
+        name: &str,
+        group: u32,
+        bindings: &'a [Uniform],
+        device: &wgpu::Device,
+    ) -> Self {
+        let mut layout_entries = Vec::new();
+        let mut group_entries = Vec::new();
+        for b in bindings {
+            layout_entries.push(b.create_layout());
+            group_entries.push(b.create_groupie());
+        }
+        let layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some(&format!("{name}_group_layout")),
+                entries: &layout_entries[..],
+            }
+        );
+        Self {
+            name: name.to_string(),
+            group,
+            bindings,
+            layout_entries,
+            group_entries,
+            layout,
+            layout_opt: None,
+        }
+    }
+
+    fn get_group(&self) -> u32 {
+        self.group
+    }
+
+    fn get_layout(&self) -> &wgpu::BindGroupLayout {
+        // self.layout_opt = Some(&self.layout);
+        &self.layout
+    }
+
+    fn make_group(&self, device: &wgpu::Device
+    ) -> wgpu::BindGroup  {
+        let aname = &self.name;
+        device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some(&format!("{aname}_group")),
+                layout: &self.layout,
+                entries: &self.group_entries[..],
+            }
+        )
+    }
+}
+
+pub struct PipelineBindGroups<'a> {
+    name: String,
+    groups: &'a [&'a Group<'a>],
+    group_layouts: Vec<Option<&'a wgpu::BindGroupLayout>>,
+    layout: Option<wgpu::PipelineLayout>,
+    bind_groups: Vec<wgpu::BindGroup>
+}
+impl<'a> PipelineBindGroups<'a> {
+    pub fn new(
+        name: &str,
+        groups: &'a [&'a Group<'a>],
+        device: &wgpu::Device,
+    ) -> Self {
+        let mut group_layouts = Vec::new();
+        let mut bind_groups = Vec::new();
+        for g in groups {
+            group_layouts.push(Some(g.get_layout()));
+            bind_groups.push(g.make_group(device));
+        }
+        Self {
+            name: name.to_string(),
+            groups,
+            group_layouts,
+            bind_groups,
+            layout: None,
+        }
+    }
+
+    // Using a Vec when an option should work
+    // Maybe I'll figure out how to use option someday
+    fn get_layout(
+        &mut self,
+        device: &wgpu::Device
+    ) -> &wgpu::PipelineLayout {
+        if self.layout.is_none() {
+            self.layout = Some(device.create_pipeline_layout(
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some(&self.name),
+                    bind_group_layouts: &self.group_layouts[..],
+                    immediate_size: 0,
+                }
+            ));
+        }
+        (&self.layout).as_ref().unwrap()
+    }
+
+    fn make_pipeline_group(
+        &self,
+        renderpass: &mut wgpu::RenderPass,
+    ) {
+        for i in 0..self.groups.len() {
+            renderpass.set_bind_group(
+                self.groups[i].get_group(),
+                &self.bind_groups[i],
+                &[]
+            );
+        }
+
+
+    }
+}
+
+    // fn get_layout(
+    //     &mut self,
+    //     device: &wgpu::Device
+    // ) -> &wgpu::PipelineLayout {
+    //     if self.layout.len() == 0 {
+    //         self.layout.push(device.create_pipeline_layout(
+    //             &wgpu::PipelineLayoutDescriptor {
+    //                 label: Some(&self.name),
+    //                 bind_group_layouts: &self.group_layouts[..],
+    //                 immediate_size: 0,
+    //             }
+    //         ));
+    //     }
+    //     &self.layout[0]
+    // }
+
+// struct Uniforms {
+//     screen_x: u32,
+//     screen_y: u32,
+// }
+
+// impl Uniforms {
+//     fn new(
+//         screen_x: u32,
+//         screen_y: u32,
+//         device: &wgpu::Device,
+//     ) -> Self {
+//         let xbuffer = device.create_buffer_init(
+//             &wgpu::util::BufferInitDescriptor {
+//                 label: Some("screen_x"),
+//                 contents: bytemuck::cast_slice(&[screen_x]),
+//                 usage: wgpu::BufferUsages::UNIFORM |
+//                     wgpu::BufferUsages::COPY_DST,
+//             }
+//         );
+//         let ybuffer = device.create_buffer_init(
+//             &wgpu::util::BufferInitDescriptor {
+//                 label: Some("screen_y"),
+//                 contents: bytemuck::cast_slice(&[screen_y]),
+//                 usage: wgpu::BufferUsages::UNIFORM |
+//                     wgpu::BufferUsages::COPY_DST,
+//             }
+//         );
+
+// // struct bindgroup
+
+// // create a bind group layout for each buffer
+
+//         let bind_group0_layout = device.create_bind_group_layout(
+//             &wgpu::BindGroupLayoutDescriptor {
+//                 entries: &[
+//                     wgpu::BindGroupLayoutEntry {
+//                         binding: 0,
+//                         visibility: wgpu::ShaderStages::FRAGMENT,
+//                         ty: wgpu::BindingType::Buffer {
+//                             ty: wgpu::BufferBindingType::Uniform,
+//                             has_dynamic_offset: false,
+//                             min_binding_size: None,
+//                         },
+//                         count: None,
+//                     },
+//                     wgpu::BindGroupLayoutEntry {
+//                         binding: 1,
+//                         visibility: wgpu::ShaderStages::FRAGMENT,
+//                         ty: wgpu::BindingType::Buffer {
+//                             ty: wgpu::BufferBindingType::Uniform,
+//                             has_dynamic_offset: false,
+//                             min_binding_size: None,
+//                         },
+//                         count: None,
+//                     },
+//                 ],
+//                 label: Some("bind_group0_layout"),
+//             }
+//         );
+
+// // create a bind group for each buffer
+
+//         let bind_group0 = device.create_bind_group(
+//             &wgpu::BindGroupDescriptor {
+//                 layout: &bind_group0_layout,
+//                 entries: &[
+//                     wgpu::BindGroupEntry {
+//                         binding: 0,
+//                         resource: xbuffer.as_entire_binding(),
+//                     },
+//                     wgpu::BindGroupEntry {
+//                         binding: 1,
+//                         resource: ybuffer.as_entire_binding(),
+//                     },
+//                 ],
+//                 label: Some("bind_group0"),
+//             }
+//         );
+
+// // struct PipelineBindGroups
+
+// // set pipeline layouts
+
+//         let render_pipeline_layout = device.create_pipeline_layout(
+//             &wgpu::PipelineLayoutDescriptor {
+//                 label: Some("Render Pipeline Layout"),
+//                 bind_group_layouts: &[
+//                     Some(&bind_group0_layout),  // for each group
+//                 ],
+//                 immediate_size: 0,
+//             }
+//         );
+
+// // set each bind groiup in pipeline
+
+//         render_pass.set_bind_group(0, &bind_group0, &[]);
+
+//         Self {
+//             screen_x,
+//             screen_y,
+//         }
+//     }
+// }
 
 // We need this for Rust to store our data correctly for the shaders
 // #[repr(C)]
@@ -15,295 +340,295 @@ use enum_map::{enum_map, Enum, EnumMap};
 // }
 
 //  Should this have a generic type parameter for value?
-pub struct Uniform {
-    name: String,           // Shader variable name
-    value: i32,                 // Shader variable type
-    bind_group: GroupIndex,
-    binding: u32,
-    buffer: wgpu::Buffer,
-}
+// pub struct Uniform {
+//     name: String,           // Shader variable name
+//     value: i32,                 // Shader variable type
+//     bind_group: GroupIndex,
+//     binding: u32,
+//     buffer: wgpu::Buffer,
+// }
 
-impl Uniform {
-    fn new(
-        name: &str,
-        value: i32,
-        bind_group: GroupIndex,
-        binding: u32,
-        device: &wgpu::Device,
-    ) -> Self {
-        // let name = name.to_string();
-        // let buffer = device.create_buffer_init(
-        //     &wgpu::util::BufferInitDescriptor {
-        //         label: Some(&name),
-        //         // contents: bytemuck::cast_slice(&[camera_uniform]),
-        //         contents: bytemuck::cast_slice(&[i]),
-        //         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        //     }
-        // );
-        // let binding_entry = wgpu::BindGroupEntry {
-        //     binding: binding,
-        //     resource: buffer.as_entire_binding(),
-        // };
-        Self {
-            name: name.to_string(),
-            value,
-            bind_group,
-            binding,
-            buffer: device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some(&name),
-                    // contents: bytemuck::cast_slice(&[camera_uniform]),
-                    contents: bytemuck::cast_slice(&[value]),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                }
-            ),
-        }
-    }
-    fn make_buffer(
-        &mut self,
-        value: i32,
-        device: &wgpu::Device,
-    ) {
-        self.value = value;
-        self.buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some(&self.name),
-                contents: bytemuck::cast_slice(&[value]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }
-        );
-    }
-    fn make_layout(&self) -> wgpu::BindGroupLayoutEntry {
-        wgpu::BindGroupLayoutEntry {
-            binding: self.binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }
-    }
+// impl Uniform {
+//     fn new(
+//         name: &str,
+//         value: i32,
+//         bind_group: GroupIndex,
+//         binding: u32,
+//         device: &wgpu::Device,
+//     ) -> Self {
+//         // let name = name.to_string();
+//         // let buffer = device.create_buffer_init(
+//         //     &wgpu::util::BufferInitDescriptor {
+//         //         label: Some(&name),
+//         //         // contents: bytemuck::cast_slice(&[camera_uniform]),
+//         //         contents: bytemuck::cast_slice(&[i]),
+//         //         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+//         //     }
+//         // );
+//         // let binding_entry = wgpu::BindGroupEntry {
+//         //     binding: binding,
+//         //     resource: buffer.as_entire_binding(),
+//         // };
+//         Self {
+//             name: name.to_string(),
+//             value,
+//             bind_group,
+//             binding,
+//             buffer: device.create_buffer_init(
+//                 &wgpu::util::BufferInitDescriptor {
+//                     label: Some(&name),
+//                     // contents: bytemuck::cast_slice(&[camera_uniform]),
+//                     contents: bytemuck::cast_slice(&[value]),
+//                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+//                 }
+//             ),
+//         }
+//     }
+//     fn make_buffer(
+//         &mut self,
+//         value: i32,
+//         device: &wgpu::Device,
+//     ) {
+//         self.value = value;
+//         self.buffer = device.create_buffer_init(
+//             &wgpu::util::BufferInitDescriptor {
+//                 label: Some(&self.name),
+//                 contents: bytemuck::cast_slice(&[value]),
+//                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+//             }
+//         );
+//     }
+//     fn make_layout(&self) -> wgpu::BindGroupLayoutEntry {
+//         wgpu::BindGroupLayoutEntry {
+//             binding: self.binding,
+//             visibility: wgpu::ShaderStages::FRAGMENT,
+//             ty: wgpu::BindingType::Buffer {
+//                 ty: wgpu::BufferBindingType::Uniform,
+//                 has_dynamic_offset: false,
+//                 min_binding_size: None,
+//             },
+//             count: None,
+//         }
+//     }
 
-    ////    should this be done in BindGroup? and prevent needing
-    ///     to annotate lifetime?
-    fn make_bind(
-        &mut self,
-        // device: &wgpu::Device,
-    ) -> wgpu::BindGroupEntry<'_> {
-        wgpu::BindGroupEntry {
-            binding: self.binding,
-            resource: self.buffer.as_entire_binding(),
-        }
-    }
+//     ////    should this be done in BindGroup? and prevent needing
+//     ///     to annotate lifetime?
+//     fn make_bind(
+//         &mut self,
+//         // device: &wgpu::Device,
+//     ) -> wgpu::BindGroupEntry<'_> {
+//         wgpu::BindGroupEntry {
+//             binding: self.binding,
+//             resource: self.buffer.as_entire_binding(),
+//         }
+//     }
 
-    fn make_wgsl(&self) -> String {
-        let bind_goup = self.bind_group as u32;
-        let binding = self.binding;
-        let name = &self.name;
-        format!("@group({bind_goup}) @binding({binding})
-            var<uniform> {name}: i32;\n")
-    }
-}
+//     fn make_wgsl(&self) -> String {
+//         let bind_goup = self.bind_group as u32;
+//         let binding = self.binding;
+//         let name = &self.name;
+//         format!("@group({bind_goup}) @binding({binding})
+//             var<uniform> {name}: i32;\n")
+//     }
+// }
 
-pub struct BindGroup {
-    pub bind_group: GroupIndex,
-    pub uniforms: Vec<Uniform>,
-    pub layouts: Vec<wgpu::BindGroupLayoutEntry>,
-    // pub uniform_binds: Vec<wgpu::BindGroupEntry>,
-    // pub layout:  wgpu::BindGroupLayoutDescriptor,
-    // pub layout: wgpu::BindGroupLayout,
-    // pub binding: wgpu::BindGroup,
-}
+// pub struct BindGroup {
+//     pub bind_group: GroupIndex,
+//     pub uniforms: Vec<Uniform>,
+//     pub layouts: Vec<wgpu::BindGroupLayoutEntry>,
+//     // pub uniform_binds: Vec<wgpu::BindGroupEntry>,
+//     // pub layout:  wgpu::BindGroupLayoutDescriptor,
+//     // pub layout: wgpu::BindGroupLayout,
+//     // pub binding: wgpu::BindGroup,
+// }
 
-impl BindGroup {
-    fn new(bind_group: GroupIndex) -> Self {
-        Self {
-            bind_group,
-            uniforms: Vec::new(),
-            layouts: Vec::new(),
-        }
-    }
-    fn new_uniform(
-        &mut self,
-        name: &str,
-        ii: i32,
-        // bind_group: u32,
-        // binding: u32,
-        device: &wgpu::Device,
-    ) {
-        let binding = self.uniforms.len().to_u32().expect("");
-        let uniform = Uniform::new(
-            name, ii, self.bind_group, binding, device);
-        // self.uniforms.push(Uniform::new(
-        //     name, ii, self.bind_group as u32, binding, device));
-        self.layouts.push(uniform.make_layout());
-        self.uniforms.push(uniform);
-    }
-    fn make_layout(
-        &self,
-        device: &wgpu::Device,
-    ) -> wgpu::BindGroupLayout {
-        // let mut layouts: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
-        // for uniform in &self.uniforms {
-        //     layouts.push(uniform.make_layout());
-        // }
-        println!("uniforms length = {}", self.uniforms.len());
-        device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
-                // entries: &self.layouts,
-                entries: &self.layouts,
-                label: Some(
-                    &format!("{:?}_bind_group_layout", self.bind_group)),
-            //.expect(&format!("not a bind group: {group_name}"));
-            }
-        )
-    }
-    fn make_binds(
-        &mut self,
-    ) -> Vec<wgpu::BindGroupEntry<'_>> {
-        let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
-        // fill in here
-        for uniform in &mut self.uniforms {
-            binds.push(uniform.make_bind());
-        }
-        binds
-    }
-    fn make_group(
-        &mut self,
-        device: &wgpu::Device,
-   ) -> wgpu::BindGroup {
-        let bind_group = self.bind_group;
-        device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                layout: &self.make_layout(device),
-                entries: &self.make_binds(),
-                // label: Some(&(self.name.clone() + "_bind_group")),
-                label: Some(
-                    &format!("{:?}_bind_group", bind_group)),
-            }
-        )
-    }
-    fn set_render_pass(
-        &mut self,
-        device: &wgpu::Device,
-        render_pass: &mut wgpu::RenderPass
-    ) {
-        let bind_group = self.bind_group as u32;
-        render_pass.set_bind_group(
-            bind_group, &self.make_group(device), &[]);
-    }
-    fn make_wgsl(&self) -> String {
-        let mut str = String::new();
-        for uniform in &self.uniforms {
-            str.push_str(&uniform.make_wgsl());
-        }
-        str
-    }
-}   // BindGroup
+// impl BindGroup {
+//     fn new(bind_group: GroupIndex) -> Self {
+//         Self {
+//             bind_group,
+//             uniforms: Vec::new(),
+//             layouts: Vec::new(),
+//         }
+//     }
+//     fn new_uniform(
+//         &mut self,
+//         name: &str,
+//         ii: i32,
+//         // bind_group: u32,
+//         // binding: u32,
+//         device: &wgpu::Device,
+//     ) {
+//         let binding = self.uniforms.len().to_u32().expect("");
+//         let uniform = Uniform::new(
+//             name, ii, self.bind_group, binding, device);
+//         // self.uniforms.push(Uniform::new(
+//         //     name, ii, self.bind_group as u32, binding, device));
+//         self.layouts.push(uniform.make_layout());
+//         self.uniforms.push(uniform);
+//     }
+//     fn make_layout(
+//         &self,
+//         device: &wgpu::Device,
+//     ) -> wgpu::BindGroupLayout {
+//         // let mut layouts: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+//         // for uniform in &self.uniforms {
+//         //     layouts.push(uniform.make_layout());
+//         // }
+//         println!("uniforms length = {}", self.uniforms.len());
+//         device.create_bind_group_layout(
+//             &wgpu::BindGroupLayoutDescriptor {
+//                 // entries: &self.layouts,
+//                 entries: &self.layouts,
+//                 label: Some(
+//                     &format!("{:?}_bind_group_layout", self.bind_group)),
+//             //.expect(&format!("not a bind group: {group_name}"));
+//             }
+//         )
+//     }
+//     fn make_binds(
+//         &mut self,
+//     ) -> Vec<wgpu::BindGroupEntry<'_>> {
+//         let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
+//         // fill in here
+//         for uniform in &mut self.uniforms {
+//             binds.push(uniform.make_bind());
+//         }
+//         binds
+//     }
+//     fn make_group(
+//         &mut self,
+//         device: &wgpu::Device,
+//    ) -> wgpu::BindGroup {
+//         let bind_group = self.bind_group;
+//         device.create_bind_group(
+//             &wgpu::BindGroupDescriptor {
+//                 layout: &self.make_layout(device),
+//                 entries: &self.make_binds(),
+//                 // label: Some(&(self.name.clone() + "_bind_group")),
+//                 label: Some(
+//                     &format!("{:?}_bind_group", bind_group)),
+//             }
+//         )
+//     }
+//     fn set_render_pass(
+//         &mut self,
+//         device: &wgpu::Device,
+//         render_pass: &mut wgpu::RenderPass
+//     ) {
+//         let bind_group = self.bind_group as u32;
+//         render_pass.set_bind_group(
+//             bind_group, &self.make_group(device), &[]);
+//     }
+//     fn make_wgsl(&self) -> String {
+//         let mut str = String::new();
+//         for uniform in &self.uniforms {
+//             str.push_str(&uniform.make_wgsl());
+//         }
+//         str
+//     }
+// }   // BindGroup
 
-#[derive(Debug, Enum, Clone, Copy)]
-pub enum GroupIndex {
-    Scalars=0,
-    Textures,
-}
+// #[derive(Debug, Enum, Clone, Copy)]
+// pub enum GroupIndex {
+//     Scalars=0,
+//     Textures,
+// }
 
-fn group_names(index: GroupIndex) -> &'static str {
-    match index  {
-        GroupIndex::Scalars => { "Scalars" }
-        GroupIndex::Textures => { "Textures" }
-    }
-}
+// fn group_names(index: GroupIndex) -> &'static str {
+//     match index  {
+//         GroupIndex::Scalars => { "Scalars" }
+//         GroupIndex::Textures => { "Textures" }
+//     }
+// }
 
-//  Need all layouts struct?
-// #[derive(Default)]
-pub struct PipelineBindGroups {
-    name: String,
-    groups: EnumMap<GroupIndex, BindGroup>,
-    layouts: Vec<wgpu::BindGroupLayout>,
-    // list: GroupArray<BindGroup>,
-    // list: [BindGroup; N_OBJECTS],
-    // need a uniform name table (map)?
-    // list: Vec<BindGroup>,
-}
+// //  Need all layouts struct?
+// // #[derive(Default)]
+// pub struct PipelineBindGroups {
+//     name: String,
+//     groups: EnumMap<GroupIndex, BindGroup>,
+//     layouts: Vec<wgpu::BindGroupLayout>,
+//     // list: GroupArray<BindGroup>,
+//     // list: [BindGroup; N_OBJECTS],
+//     // need a uniform name table (map)?
+//     // list: Vec<BindGroup>,
+// }
 
-impl PipelineBindGroups {
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            groups: enum_map!{
-                GroupIndex::Scalars => 
-                    BindGroup::new(GroupIndex::Scalars),
-                GroupIndex::Textures =>
-                    BindGroup::new(GroupIndex::Textures),
-            },
-            layouts: Vec::new(),
-        }
-    }
-    pub fn new_uniform(
-        &mut self,
-        name: &str,
-        group: GroupIndex,
-        ii: i32,
-        device: &wgpu::Device,
-    ) {
-        // let mut bind_group = self.list.last().expect("");
-        // let mut bind_group = self.find_bind_group(group_name)
-        //     .expect(&format!("not a bind group: {group_name}"));
-        // bind_group.new_uniform(name, ii, device);
-        println!("new uniform = {}", name);
-        self.groups[group].new_uniform(name, ii, device);
-    }
-        // for uniform in &self.uniforms {
-        //     layouts.push(uniform.make_layout());
-        // }
+// impl PipelineBindGroups {
+//     pub fn new(name: &str) -> Self {
+//         Self {
+//             name: name.to_string(),
+//             groups: enum_map!{
+//                 GroupIndex::Scalars => 
+//                     BindGroup::new(GroupIndex::Scalars),
+//                 GroupIndex::Textures =>
+//                     BindGroup::new(GroupIndex::Textures),
+//             },
+//             layouts: Vec::new(),
+//         }
+//     }
+//     pub fn new_uniform(
+//         &mut self,
+//         name: &str,
+//         group: GroupIndex,
+//         ii: i32,
+//         device: &wgpu::Device,
+//     ) {
+//         // let mut bind_group = self.list.last().expect("");
+//         // let mut bind_group = self.find_bind_group(group_name)
+//         //     .expect(&format!("not a bind group: {group_name}"));
+//         // bind_group.new_uniform(name, ii, device);
+//         println!("new uniform = {}", name);
+//         self.groups[group].new_uniform(name, ii, device);
+//     }
+//         // for uniform in &self.uniforms {
+//         //     layouts.push(uniform.make_layout());
+//         // }
 
-    pub fn pipeline_layout(
-        &mut self,
-        device: &wgpu::Device
-    ) -> wgpu::PipelineLayout {
-        // Lives long enough for Rust but long enough for wgpu?
-        // println!("{:#?}", &self.groups[GroupIndex::Scalars]);
-        for (_k, g) in &self.groups {
-            if !g.uniforms.is_empty() {
-                self.layouts.push(g.make_layout(&device));
-            }
-        }
+//     pub fn pipeline_layout(
+//         &mut self,
+//         device: &wgpu::Device
+//     ) -> wgpu::PipelineLayout {
+//         // Lives long enough for Rust but long enough for wgpu?
+//         // println!("{:#?}", &self.groups[GroupIndex::Scalars]);
+//         for (_k, g) in &self.groups {
+//             if !g.uniforms.is_empty() {
+//                 self.layouts.push(g.make_layout(&device));
+//             }
+//         }
 
-        let layout_ref: Vec<&wgpu::BindGroupLayout> =
-            self.layouts.iter().collect();
-        // let mut layout_ref: Vec<&wgpu::BindGroupLayout> = Vec::new();
-        // for layout in &self.layouts {
-        //     layout_ref.push(layout);
-        // }
-        let alayout = &layout_ref[..];
-        println!("{:#?}", alayout);
-        let aname = &self.name;
-        device.create_pipeline_layout(
-            &wgpu::PipelineLayoutDescriptor {
-                // label: Some(&(self.name.clone() + "_pipeline_layout")),
-                label: Some(&format!("{aname}_pipeline_layout")),
-                bind_group_layouts: &layout_ref[..],
-                push_constant_ranges: &[],
-            }
-        )
-    }
-    pub fn set_render_pass(
-        &mut self,
-        device: &wgpu::Device,
-        render_pass: &mut wgpu::RenderPass,
-    ) {
-        for (_k, g) in &mut self.groups {
-            g.set_render_pass(device, render_pass);
-        }
-    }
-    pub fn make_wgsl(&self) -> String {
-        let mut str = String::new();
-        for (_k, g) in &self.groups {
-            str.push_str(&g.make_wgsl());
-        }
-        str
-    }
+//         let layout_ref: Vec<&wgpu::BindGroupLayout> =
+//             self.layouts.iter().collect();
+//         // let mut layout_ref: Vec<&wgpu::BindGroupLayout> = Vec::new();
+//         // for layout in &self.layouts {
+//         //     layout_ref.push(layout);
+//         // }
+//         let alayout = &layout_ref[..];
+//         println!("{:#?}", alayout);
+//         let aname = &self.name;
+//         device.create_pipeline_layout(
+//             &wgpu::PipelineLayoutDescriptor {
+//                 // label: Some(&(self.name.clone() + "_pipeline_layout")),
+//                 label: Some(&format!("{aname}_pipeline_layout")),
+//                 bind_group_layouts: &layout_ref[..],
+//                 push_constant_ranges: &[],
+//             }
+//         )
+//     }
+//     pub fn set_render_pass(
+//         &mut self,
+//         device: &wgpu::Device,
+//         render_pass: &mut wgpu::RenderPass,
+//     ) {
+//         for (_k, g) in &mut self.groups {
+//             g.set_render_pass(device, render_pass);
+//         }
+//     }
+//     pub fn make_wgsl(&self) -> String {
+//         let mut str = String::new();
+//         for (_k, g) in &self.groups {
+//             str.push_str(&g.make_wgsl());
+//         }
+//         str
+//     }
 
-}
+// }
