@@ -6,9 +6,12 @@ edition = "2024"  # 2021
 [dependencies]
 anyhow = "1.0"
 bytemuck = { version = "1.12", features = [ "derive" ] }
-enum-map = "2.7.3"
+enum-map = "3.1.0"
 env_logger = "0.11.6"
+instant = "0.1.13"
+log = "0.4.33"
+nalgebra = "0.35"
 num-traits = "0.2.19"
-pollster = "0.4"
-wgpu = "29.0.3"
-winit = { version = "0.30.8", features = ["android-native-activity"] }
+pollster = "1.0.1"
+wgpu = "30.0.0"
+winit = "0.30.13"

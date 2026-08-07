@@ -1,634 +1,394 @@
+use nalgebra::Vector3;
+use wgpu;
 use wgpu::BindGroupEntry;
 use wgpu::util::DeviceExt;
-use num_traits::cast::ToPrimitive;
 
-use enum_map::{enum_map, Enum, EnumMap};
+use winit::{
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::*,
+    keyboard::{KeyCode, ModifiersState},
+};
+use instant::{Duration, Instant};
+use std::f32::consts::TAU;
+extern crate nalgebra as na;
 
-// @group(0) @binding(0) // 1.
-// var<uniform> screen_x: u32;
-// @group(0) @binding(1) // 1.
-// var<uniform> screen_y: u32;
-// @group(0) @binding(2) // 1.
-// var<uniform> timer: u64;
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Vec2u ( [u32; 2] );
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Mat4x4f ( [[f32; 4]; 4] );
 
+type Matrix4f = na::Matrix4<f32>;
+type Vector3f = na::Vector3<f32>;
 
-struct UniformDesc {
-    groupn: u32,
-    bindingn: u32,
-    wgsl_decl: String,
-    usages: wgpu::BufferUsages,
+// &Vector3::z_axis(), TAU / 8.0
+fn rotate(axis: &na::Unit<Vector3f>, angle: f32) -> Matrix4f {
+    let theta = -angle;
+    Matrix4f::from_axis_angle(axis, angle)
 }
 
-pub struct Binding<Abstract> {
-    name: String,
-    group: u32,
-    binding: u32,
-    other: Abstract,
+fn scale(s: f32) -> Matrix4f {
+    let s1 = 1.0 / s;
+    Matrix4f::new(
+        s1,  0.0, 0.0, 0.0,
+        0.0, s1,  0.0, 0.0,
+        0.0, 0.0, s1,  0.0,
+        0.0, 0.0, 0.0, 1.0,
+    )
 }
 
-pub struct Uniform {
-    name: String,
-    binding: u32,
-    buffer: wgpu::Buffer,
+fn translate(v: Vector3f) -> Matrix4f {
+    let v1 = -v;
+    Matrix4f::new(
+        1.0, 0.0, 0.0, v.x,
+        0.0, 1.0, 0.0, v.y,
+        0.0, 0.0, 1.0, v.z,
+        0.0, 0.0, 0.0, 1.0,
+    )
 }
 
-impl Uniform {
-    pub fn new<T: bytemuck::NoUninit> (
-        name: &str,
-        binding: u32,
-        data: &[T],
+// Two structs that are tightly coupled. InputHandler takes input
+// from WindowEvents and processes it for struct Uniform that then
+// passes the data to the GPU.
+
+// Input handler for inputs from WindowEvent
+// Many of the inputs interact with each other in this application
+// such that they need to belong to a single state.
+// use cgmath;
+pub struct InputHandler {
+    start_time: Instant,
+    duration: Duration,
+    frame_count: u64,
+    screen: Vec2u,
+    modifiers_state: ModifiersState,
+    key_code: KeyCode,
+    key_state: ElementState,
+    mouse_button: MouseButton,
+    mouse_state: ElementState,
+    // cursor: Point2,
+    transformer: Matrix4f,
+    scale: f32,
+}
+
+impl InputHandler {
+    pub fn new(size: PhysicalSize<u32>) -> Self {
+        let data = Vec2u([size.width, size.height]);
+        Self {
+            start_time: Instant::now(),
+            duration: Duration::new(0, 0),
+            frame_count: 0,
+            screen: data,
+            modifiers_state: ModifiersState::empty(),
+            key_code: KeyCode::Abort,
+            key_state: ElementState::Released,
+            mouse_button: MouseButton::Other(0),
+            mouse_state: ElementState::Released,
+            transformer: Matrix4f::identity(),
+            scale: 1.0,
+        }
+    }
+    pub fn new_frame(
+        &mut self,
+        queue: &wgpu::Queue,
+        uniforms: &mut Uniform
+    ) {
+        self.frame_count += 1;
+        self.duration = self.start_time.elapsed();
+        uniforms.timer.data = self.duration.as_secs_f32();
+
+        // self.transformer = Matrix4f::from_axis_angle(
+        //     &Vector3::z_axis(), TAU / 8.0
+        // );
+        // self.transformer = translate(Vector3f::new(2.0, 0.0, 0.0));
+        // let a_scale = 0.5;
+        // self.transformer = scale(a_scale);
+        // if self.frame_count == 1 {
+        //     println!("scale = {}", self.scale);
+        //     println!("{}", self.transformer);
+        //     match self.transformer.try_inverse() {
+        //         Some(inverse) => println!("{}", inverse),
+        //         None => {}
+        //     }
+        // }
+
+        uniforms.scale.data = self.scale;
+        uniforms.transformer.data.0 = self.transformer.data.0;
+        uniforms.update(queue);
+    }
+    // Currently prints out the time stats, should it return them?
+    pub fn stats(&self) {
+        let duration = self.duration;
+        let frame_count = self.frame_count;
+        let frames_sec = frame_count as f64 / duration.as_secs_f64();
+        println!(
+            "duration = {duration:?}, frame_count = {frame_count}, \
+            frames per second = {frames_sec}"
+        );
+    }
+    // pub fn set_screen(&mut self, screen: winit::dpi::PhysicalSize<u32>) {
+    //     self.screen = Vec2u([screen.width, screen.height]);
+    // }
+    // pub fn get_screen(&self) -> Vec2u  { self.screen }
+    pub fn resize(
+        &mut self,
+        queue: &wgpu::Queue,
+        uniforms: &mut Uniform,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) {
+        self.screen = Vec2u([size.width, size.height]);
+        uniforms.screen_xy.data = self.screen;
+        uniforms.resize(queue);
+    }
+    pub fn handle_modifiers(
+        &mut self,
+        modifiers_state: ModifiersState,
+    ) {
+        self.modifiers_state = modifiers_state;
+    }
+    pub fn handle_key(
+        &mut self, 
+        key_state: ElementState,
+        key_code: KeyCode
+    ) {
+        // println!("state = {key_state:?}, button = {key_code:?}");
+        match key_state {
+            ElementState::Pressed => {
+                let delta = TAU / 60.0;
+                match key_code {
+                    KeyCode::ArrowUp => {
+                        self.transformer *= Matrix4f::from_axis_angle(
+                            &Vector3::x_axis(), delta
+                        );
+                    }
+                    KeyCode::ArrowDown => {
+                        self.transformer *= Matrix4f::from_axis_angle(
+                            &Vector3::x_axis(), -delta
+                        );
+                    }
+                    KeyCode::ArrowLeft => {
+                        self.transformer *= Matrix4f::from_axis_angle(
+                            &Vector3::y_axis(), delta
+                        );
+                    }
+                    KeyCode::ArrowRight => {
+                        self.transformer *= Matrix4f::from_axis_angle(
+                            &Vector3::y_axis(), -delta
+                        );
+                    }
+                    _ => (),
+                }
+            }
+            ElementState::Released => {}
+        }
+    }
+    pub fn handle_cursor(
+        &mut self,
+        max_position: PhysicalSize<u32>,
+        position: PhysicalPosition<f64>
+    ) {
+
+    }
+    pub fn handle_mouse(
+        &mut self,
+        state: ElementState,
+        button: MouseButton
+    ) {
+        println!("state = {state:?}, button = {button:?}");
+    }
+    pub fn handle_pinch(&mut self, phase: TouchPhase, delta: f64) {
+        if delta.is_finite() {
+            let a_scale = 1.0 + delta as f32;
+            // println!("{phase:?}, {a_scale}");
+            if phase == TouchPhase::Moved {
+                self.transformer *= scale(a_scale);
+                self.scale *= a_scale;
+            }
+        }
+    }
+    pub fn handle_pan(
+        &mut self,
+        phase: TouchPhase,
+        delta: MouseScrollDelta,
+    ) {
+        if phase == TouchPhase::Moved {
+            // println!("{phase:?}, {delta:?}");
+            let (x, y) = match delta {
+                MouseScrollDelta::LineDelta(y, x) => (x, y),
+                MouseScrollDelta::PixelDelta(p) => (
+                    2.0 * -p.x as f32 / self.screen.0[0] as f32,
+                    2.0 * p.y as f32 / self.screen.0[1] as f32
+                )
+            };
+            // println!("x = {x}, y = {y}");
+            self.transformer *= translate(Vector3f::new(x, y, 0.0));
+        }
+    }
+    pub fn handle_rotation(&mut self, phase: TouchPhase, delta: f32) {
+        if phase == TouchPhase::Moved {
+            self.transformer *= Matrix4f::from_axis_angle(
+                &Vector3::z_axis(), -delta
+            );
+        }
+    }
+}
+
+const UNIFORMS: &str = "uniforms";
+const SCREEN_XY: &str = "screen_xy";
+const TRANSFORMER: &str = "transformer";
+const SCALE: &str = "scale";
+const TIMER: &str = "timer";
+
+// Takes data supplied by inputs and passes it on to the GPU.
+const SIMPLE_LAYOUT: wgpu::BindGroupLayoutEntry =
+wgpu::BindGroupLayoutEntry{
+    binding: 0,
+    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+    ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    },
+    count: None,
+};
+
+fn uniform_usage() -> wgpu::BufferUsages {
+    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST
+}
+
+pub struct Auniform<T>
+where
+    T: Copy + bytemuck::Pod + bytemuck::Zeroable,
+{
+    pub name: String,
+    pub n_bind: u32,
+    pub data: T,
+    pub buff: wgpu::Buffer,
+}
+
+impl<T: Copy + bytemuck::Pod + bytemuck::Zeroable> Auniform<T> {
+    fn new(
         device: &wgpu::Device,
+        name: &str,
+        n_bind: u32,
+        data: T
     ) -> Self {
         Self {
             name: name.to_string(),
-            binding,
-            buffer: device.create_buffer_init(
+            n_bind,
+            data,
+            buff: device.create_buffer_init(
                 &wgpu::util::BufferInitDescriptor {
                     label: Some(name),
-                    contents: bytemuck::cast_slice(data),
-                    usage: wgpu::BufferUsages::UNIFORM |
-                        wgpu::BufferUsages::COPY_DST,
+                    contents: bytemuck::cast_slice(&[data]),
+                    usage: uniform_usage(),
                 }
             )
         }
     }
-    fn create_layout(&self) -> wgpu::BindGroupLayoutEntry {
+    fn layout(&self) -> wgpu::BindGroupLayoutEntry {
         wgpu::BindGroupLayoutEntry {
-            binding: self.binding,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
+            binding: self.n_bind,
+            ..SIMPLE_LAYOUT
         }
     }
-
-    fn create_groupie(&self) -> wgpu::BindGroupEntry {
+    fn bind(&self) -> wgpu::BindGroupEntry {
         wgpu::BindGroupEntry {
-            binding: self.binding,
-            resource: self.buffer.as_entire_binding(),
+            binding: self.n_bind,
+            resource: self.buff.as_entire_binding(),
         }
     }
-}
-
-pub struct Auniform {
-    pub name: String,
-    pub n: u32,
-    pub data: u32,
-    // buffer: wgpu::Buffer,
-}
-
-pub struct AGroup {
-    pub name: String,
-    pub n: u32,
-    pub bindings: Vec<Auniform>,
-}
-
-pub struct Group<'a> {
-    name: String,
-    group: u32,
-    bindings: &'a [Uniform],
-    layout_entries: Vec<wgpu::BindGroupLayoutEntry>,
-    layout: wgpu::BindGroupLayout,
-    layout_opt: Option<&'a wgpu::BindGroupLayout>,
-    group_entries: Vec<wgpu::BindGroupEntry<'a>>,
-}
-
-impl<'a> Group<'a> {
-    pub fn new(
-        name: &str,
-        group: u32,
-        bindings: &'a [Uniform],
-        device: &wgpu::Device,
-    ) -> Self {
-        let mut layout_entries = Vec::new();
-        let mut group_entries = Vec::new();
-        for b in bindings {
-            layout_entries.push(b.create_layout());
-            group_entries.push(b.create_groupie());
-        }
-        let layout = device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
-                label: Some(&format!("{name}_group_layout")),
-                entries: &layout_entries[..],
-            }
-        );
-        Self {
-            name: name.to_string(),
-            group,
-            bindings,
-            layout_entries,
-            group_entries,
-            layout,
-            layout_opt: None,
-        }
-    }
-
-    fn get_group(&self) -> u32 {
-        self.group
-    }
-
-    fn get_layout(&self) -> &wgpu::BindGroupLayout {
-        // self.layout_opt = Some(&self.layout);
-        &self.layout
-    }
-
-    fn make_group(&self, device: &wgpu::Device
-    ) -> wgpu::BindGroup  {
-        let aname = &self.name;
-        device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                label: Some(&format!("{aname}_group")),
-                layout: &self.layout,
-                entries: &self.group_entries[..],
-            }
-        )
-    }
-}
-
-pub struct PipelineBindGroups<'a> {
-    name: String,
-    groups: &'a [&'a Group<'a>],
-    group_layouts: Vec<Option<&'a wgpu::BindGroupLayout>>,
-    layout: Option<wgpu::PipelineLayout>,
-    bind_groups: Vec<wgpu::BindGroup>
-}
-impl<'a> PipelineBindGroups<'a> {
-    pub fn new(
-        name: &str,
-        groups: &'a [&'a Group<'a>],
-        device: &wgpu::Device,
-    ) -> Self {
-        let mut group_layouts = Vec::new();
-        let mut bind_groups = Vec::new();
-        for g in groups {
-            group_layouts.push(Some(g.get_layout()));
-            bind_groups.push(g.make_group(device));
-        }
-        Self {
-            name: name.to_string(),
-            groups,
-            group_layouts,
-            bind_groups,
-            layout: None,
-        }
-    }
-
-    // Using a Vec when an option should work
-    // Maybe I'll figure out how to use option someday
-    fn get_layout(
+    fn update(
         &mut self,
-        device: &wgpu::Device
-    ) -> &wgpu::PipelineLayout {
-        if self.layout.is_none() {
-            self.layout = Some(device.create_pipeline_layout(
-                &wgpu::PipelineLayoutDescriptor {
-                    label: Some(&self.name),
-                    bind_group_layouts: &self.group_layouts[..],
-                    immediate_size: 0,
-                }
-            ));
-        }
-        (&self.layout).as_ref().unwrap()
-    }
-
-    fn make_pipeline_group(
-        &self,
-        renderpass: &mut wgpu::RenderPass,
+        queue: &wgpu::Queue,
     ) {
-        for i in 0..self.groups.len() {
-            renderpass.set_bind_group(
-                self.groups[i].get_group(),
-                &self.bind_groups[i],
-                &[]
-            );
-        }
-
-
+        // let uniforms = &mut self.uniforms;
+        queue.write_buffer(
+            &self.buff,
+            0,
+            bytemuck::cast_slice(&[self.data])
+        );
     }
 }
 
-    // fn get_layout(
-    //     &mut self,
-    //     device: &wgpu::Device
-    // ) -> &wgpu::PipelineLayout {
-    //     if self.layout.len() == 0 {
-    //         self.layout.push(device.create_pipeline_layout(
-    //             &wgpu::PipelineLayoutDescriptor {
-    //                 label: Some(&self.name),
-    //                 bind_group_layouts: &self.group_layouts[..],
-    //                 immediate_size: 0,
-    //             }
-    //         ));
-    //     }
-    //     &self.layout[0]
-    // }
+pub struct Uniform {
+    pub screen_xy: Auniform<Vec2u>,
+    pub transformer: Auniform<Mat4x4f>,
+    pub timer: Auniform<f32>,
+    pub scale: Auniform<f32>,
+    pub uniform_group_layout: wgpu::BindGroupLayout,
+    pub uniform_group: wgpu::BindGroup,
+}
 
-// struct Uniforms {
-//     screen_x: u32,
-//     screen_y: u32,
-// }
+impl Uniform {
+    pub fn new(
+        device: &wgpu::Device,
+        size: &winit::dpi::PhysicalSize<u32>,
+    ) -> Self {
+        let data = Vec2u([size.width, size.height]);
+        let screen_xy = Auniform::<Vec2u>::new(
+            device, SCREEN_XY, 0, data
+        );
+        let data = Mat4x4f([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        let transformer = Auniform::<Mat4x4f>::new(
+            device, TRANSFORMER, 1, data
+        );
+        let timer = Auniform::<f32>::new(
+            device, TIMER, 2, 0.0
+        );
+        let scale = Auniform::<f32>::new(
+            device, SCALE, 3, 1.0
+        );
+        let uniform_group_layout =
+            device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    screen_xy.layout(),
+                    transformer.layout(),
+                    timer.layout(),
+                    scale.layout(),
+                ],
+                label: Some(&format!("{UNIFORMS}_group")),
+            });
 
-// impl Uniforms {
-//     fn new(
-//         screen_x: u32,
-//         screen_y: u32,
-//         device: &wgpu::Device,
-//     ) -> Self {
-//         let xbuffer = device.create_buffer_init(
-//             &wgpu::util::BufferInitDescriptor {
-//                 label: Some("screen_x"),
-//                 contents: bytemuck::cast_slice(&[screen_x]),
-//                 usage: wgpu::BufferUsages::UNIFORM |
-//                     wgpu::BufferUsages::COPY_DST,
-//             }
-//         );
-//         let ybuffer = device.create_buffer_init(
-//             &wgpu::util::BufferInitDescriptor {
-//                 label: Some("screen_y"),
-//                 contents: bytemuck::cast_slice(&[screen_y]),
-//                 usage: wgpu::BufferUsages::UNIFORM |
-//                     wgpu::BufferUsages::COPY_DST,
-//             }
-//         );
+        let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &uniform_group_layout,
+            entries: &[
+                screen_xy.bind(),
+                transformer.bind(),
+                timer.bind(),
+                scale.bind(),
+            ],
+            label: Some(UNIFORMS),
+        });
 
-// // struct bindgroup
+        Self {
+            screen_xy,
+            transformer,
+            timer,
+            scale,
+            uniform_group_layout,
+            uniform_group,
+        }
+    }
+    pub fn resize(
+        &mut self,
+        queue: &wgpu::Queue,
+    ) {
+        self.screen_xy.update(queue);
+    }
 
-// // create a bind group layout for each buffer
-
-//         let bind_group0_layout = device.create_bind_group_layout(
-//             &wgpu::BindGroupLayoutDescriptor {
-//                 entries: &[
-//                     wgpu::BindGroupLayoutEntry {
-//                         binding: 0,
-//                         visibility: wgpu::ShaderStages::FRAGMENT,
-//                         ty: wgpu::BindingType::Buffer {
-//                             ty: wgpu::BufferBindingType::Uniform,
-//                             has_dynamic_offset: false,
-//                             min_binding_size: None,
-//                         },
-//                         count: None,
-//                     },
-//                     wgpu::BindGroupLayoutEntry {
-//                         binding: 1,
-//                         visibility: wgpu::ShaderStages::FRAGMENT,
-//                         ty: wgpu::BindingType::Buffer {
-//                             ty: wgpu::BufferBindingType::Uniform,
-//                             has_dynamic_offset: false,
-//                             min_binding_size: None,
-//                         },
-//                         count: None,
-//                     },
-//                 ],
-//                 label: Some("bind_group0_layout"),
-//             }
-//         );
-
-// // create a bind group for each buffer
-
-//         let bind_group0 = device.create_bind_group(
-//             &wgpu::BindGroupDescriptor {
-//                 layout: &bind_group0_layout,
-//                 entries: &[
-//                     wgpu::BindGroupEntry {
-//                         binding: 0,
-//                         resource: xbuffer.as_entire_binding(),
-//                     },
-//                     wgpu::BindGroupEntry {
-//                         binding: 1,
-//                         resource: ybuffer.as_entire_binding(),
-//                     },
-//                 ],
-//                 label: Some("bind_group0"),
-//             }
-//         );
-
-// // struct PipelineBindGroups
-
-// // set pipeline layouts
-
-//         let render_pipeline_layout = device.create_pipeline_layout(
-//             &wgpu::PipelineLayoutDescriptor {
-//                 label: Some("Render Pipeline Layout"),
-//                 bind_group_layouts: &[
-//                     Some(&bind_group0_layout),  // for each group
-//                 ],
-//                 immediate_size: 0,
-//             }
-//         );
-
-// // set each bind groiup in pipeline
-
-//         render_pass.set_bind_group(0, &bind_group0, &[]);
-
-//         Self {
-//             screen_x,
-//             screen_y,
-//         }
-//     }
-// }
-
-// We need this for Rust to store our data correctly for the shaders
-// #[repr(C)]
-// This is so we can store this in a buffer
-// #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-// enum UniformType {
-//     Int(i32),
-//     Float(f32),
-// }
-
-//  Should this have a generic type parameter for value?
-// pub struct Uniform {
-//     name: String,           // Shader variable name
-//     value: i32,                 // Shader variable type
-//     bind_group: GroupIndex,
-//     binding: u32,
-//     buffer: wgpu::Buffer,
-// }
-
-// impl Uniform {
-//     fn new(
-//         name: &str,
-//         value: i32,
-//         bind_group: GroupIndex,
-//         binding: u32,
-//         device: &wgpu::Device,
-//     ) -> Self {
-//         // let name = name.to_string();
-//         // let buffer = device.create_buffer_init(
-//         //     &wgpu::util::BufferInitDescriptor {
-//         //         label: Some(&name),
-//         //         // contents: bytemuck::cast_slice(&[camera_uniform]),
-//         //         contents: bytemuck::cast_slice(&[i]),
-//         //         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-//         //     }
-//         // );
-//         // let binding_entry = wgpu::BindGroupEntry {
-//         //     binding: binding,
-//         //     resource: buffer.as_entire_binding(),
-//         // };
-//         Self {
-//             name: name.to_string(),
-//             value,
-//             bind_group,
-//             binding,
-//             buffer: device.create_buffer_init(
-//                 &wgpu::util::BufferInitDescriptor {
-//                     label: Some(&name),
-//                     // contents: bytemuck::cast_slice(&[camera_uniform]),
-//                     contents: bytemuck::cast_slice(&[value]),
-//                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-//                 }
-//             ),
-//         }
-//     }
-//     fn make_buffer(
-//         &mut self,
-//         value: i32,
-//         device: &wgpu::Device,
-//     ) {
-//         self.value = value;
-//         self.buffer = device.create_buffer_init(
-//             &wgpu::util::BufferInitDescriptor {
-//                 label: Some(&self.name),
-//                 contents: bytemuck::cast_slice(&[value]),
-//                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-//             }
-//         );
-//     }
-//     fn make_layout(&self) -> wgpu::BindGroupLayoutEntry {
-//         wgpu::BindGroupLayoutEntry {
-//             binding: self.binding,
-//             visibility: wgpu::ShaderStages::FRAGMENT,
-//             ty: wgpu::BindingType::Buffer {
-//                 ty: wgpu::BufferBindingType::Uniform,
-//                 has_dynamic_offset: false,
-//                 min_binding_size: None,
-//             },
-//             count: None,
-//         }
-//     }
-
-//     ////    should this be done in BindGroup? and prevent needing
-//     ///     to annotate lifetime?
-//     fn make_bind(
-//         &mut self,
-//         // device: &wgpu::Device,
-//     ) -> wgpu::BindGroupEntry<'_> {
-//         wgpu::BindGroupEntry {
-//             binding: self.binding,
-//             resource: self.buffer.as_entire_binding(),
-//         }
-//     }
-
-//     fn make_wgsl(&self) -> String {
-//         let bind_goup = self.bind_group as u32;
-//         let binding = self.binding;
-//         let name = &self.name;
-//         format!("@group({bind_goup}) @binding({binding})
-//             var<uniform> {name}: i32;\n")
-//     }
-// }
-
-// pub struct BindGroup {
-//     pub bind_group: GroupIndex,
-//     pub uniforms: Vec<Uniform>,
-//     pub layouts: Vec<wgpu::BindGroupLayoutEntry>,
-//     // pub uniform_binds: Vec<wgpu::BindGroupEntry>,
-//     // pub layout:  wgpu::BindGroupLayoutDescriptor,
-//     // pub layout: wgpu::BindGroupLayout,
-//     // pub binding: wgpu::BindGroup,
-// }
-
-// impl BindGroup {
-//     fn new(bind_group: GroupIndex) -> Self {
-//         Self {
-//             bind_group,
-//             uniforms: Vec::new(),
-//             layouts: Vec::new(),
-//         }
-//     }
-//     fn new_uniform(
-//         &mut self,
-//         name: &str,
-//         ii: i32,
-//         // bind_group: u32,
-//         // binding: u32,
-//         device: &wgpu::Device,
-//     ) {
-//         let binding = self.uniforms.len().to_u32().expect("");
-//         let uniform = Uniform::new(
-//             name, ii, self.bind_group, binding, device);
-//         // self.uniforms.push(Uniform::new(
-//         //     name, ii, self.bind_group as u32, binding, device));
-//         self.layouts.push(uniform.make_layout());
-//         self.uniforms.push(uniform);
-//     }
-//     fn make_layout(
-//         &self,
-//         device: &wgpu::Device,
-//     ) -> wgpu::BindGroupLayout {
-//         // let mut layouts: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
-//         // for uniform in &self.uniforms {
-//         //     layouts.push(uniform.make_layout());
-//         // }
-//         println!("uniforms length = {}", self.uniforms.len());
-//         device.create_bind_group_layout(
-//             &wgpu::BindGroupLayoutDescriptor {
-//                 // entries: &self.layouts,
-//                 entries: &self.layouts,
-//                 label: Some(
-//                     &format!("{:?}_bind_group_layout", self.bind_group)),
-//             //.expect(&format!("not a bind group: {group_name}"));
-//             }
-//         )
-//     }
-//     fn make_binds(
-//         &mut self,
-//     ) -> Vec<wgpu::BindGroupEntry<'_>> {
-//         let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
-//         // fill in here
-//         for uniform in &mut self.uniforms {
-//             binds.push(uniform.make_bind());
-//         }
-//         binds
-//     }
-//     fn make_group(
-//         &mut self,
-//         device: &wgpu::Device,
-//    ) -> wgpu::BindGroup {
-//         let bind_group = self.bind_group;
-//         device.create_bind_group(
-//             &wgpu::BindGroupDescriptor {
-//                 layout: &self.make_layout(device),
-//                 entries: &self.make_binds(),
-//                 // label: Some(&(self.name.clone() + "_bind_group")),
-//                 label: Some(
-//                     &format!("{:?}_bind_group", bind_group)),
-//             }
-//         )
-//     }
-//     fn set_render_pass(
-//         &mut self,
-//         device: &wgpu::Device,
-//         render_pass: &mut wgpu::RenderPass
-//     ) {
-//         let bind_group = self.bind_group as u32;
-//         render_pass.set_bind_group(
-//             bind_group, &self.make_group(device), &[]);
-//     }
-//     fn make_wgsl(&self) -> String {
-//         let mut str = String::new();
-//         for uniform in &self.uniforms {
-//             str.push_str(&uniform.make_wgsl());
-//         }
-//         str
-//     }
-// }   // BindGroup
-
-// #[derive(Debug, Enum, Clone, Copy)]
-// pub enum GroupIndex {
-//     Scalars=0,
-//     Textures,
-// }
-
-// fn group_names(index: GroupIndex) -> &'static str {
-//     match index  {
-//         GroupIndex::Scalars => { "Scalars" }
-//         GroupIndex::Textures => { "Textures" }
-//     }
-// }
-
-// //  Need all layouts struct?
-// // #[derive(Default)]
-// pub struct PipelineBindGroups {
-//     name: String,
-//     groups: EnumMap<GroupIndex, BindGroup>,
-//     layouts: Vec<wgpu::BindGroupLayout>,
-//     // list: GroupArray<BindGroup>,
-//     // list: [BindGroup; N_OBJECTS],
-//     // need a uniform name table (map)?
-//     // list: Vec<BindGroup>,
-// }
-
-// impl PipelineBindGroups {
-//     pub fn new(name: &str) -> Self {
-//         Self {
-//             name: name.to_string(),
-//             groups: enum_map!{
-//                 GroupIndex::Scalars => 
-//                     BindGroup::new(GroupIndex::Scalars),
-//                 GroupIndex::Textures =>
-//                     BindGroup::new(GroupIndex::Textures),
-//             },
-//             layouts: Vec::new(),
-//         }
-//     }
-//     pub fn new_uniform(
-//         &mut self,
-//         name: &str,
-//         group: GroupIndex,
-//         ii: i32,
-//         device: &wgpu::Device,
-//     ) {
-//         // let mut bind_group = self.list.last().expect("");
-//         // let mut bind_group = self.find_bind_group(group_name)
-//         //     .expect(&format!("not a bind group: {group_name}"));
-//         // bind_group.new_uniform(name, ii, device);
-//         println!("new uniform = {}", name);
-//         self.groups[group].new_uniform(name, ii, device);
-//     }
-//         // for uniform in &self.uniforms {
-//         //     layouts.push(uniform.make_layout());
-//         // }
-
-//     pub fn pipeline_layout(
-//         &mut self,
-//         device: &wgpu::Device
-//     ) -> wgpu::PipelineLayout {
-//         // Lives long enough for Rust but long enough for wgpu?
-//         // println!("{:#?}", &self.groups[GroupIndex::Scalars]);
-//         for (_k, g) in &self.groups {
-//             if !g.uniforms.is_empty() {
-//                 self.layouts.push(g.make_layout(&device));
-//             }
-//         }
-
-//         let layout_ref: Vec<&wgpu::BindGroupLayout> =
-//             self.layouts.iter().collect();
-//         // let mut layout_ref: Vec<&wgpu::BindGroupLayout> = Vec::new();
-//         // for layout in &self.layouts {
-//         //     layout_ref.push(layout);
-//         // }
-//         let alayout = &layout_ref[..];
-//         println!("{:#?}", alayout);
-//         let aname = &self.name;
-//         device.create_pipeline_layout(
-//             &wgpu::PipelineLayoutDescriptor {
-//                 // label: Some(&(self.name.clone() + "_pipeline_layout")),
-//                 label: Some(&format!("{aname}_pipeline_layout")),
-//                 bind_group_layouts: &layout_ref[..],
-//                 push_constant_ranges: &[],
-//             }
-//         )
-//     }
-//     pub fn set_render_pass(
-//         &mut self,
-//         device: &wgpu::Device,
-//         render_pass: &mut wgpu::RenderPass,
-//     ) {
-//         for (_k, g) in &mut self.groups {
-//             g.set_render_pass(device, render_pass);
-//         }
-//     }
-//     pub fn make_wgsl(&self) -> String {
-//         let mut str = String::new();
-//         for (_k, g) in &self.groups {
-//             str.push_str(&g.make_wgsl());
-//         }
-//         str
-//     }
-
-// }
+    pub fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+    ) {
+        self.transformer.update(queue);
+        self.timer.update(queue);
+        self.scale.update(queue);
+    }
+}

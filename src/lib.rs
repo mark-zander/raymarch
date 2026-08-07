@@ -3,12 +3,14 @@ pub mod uniform;
 
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::ActiveEventLoop,
-    window::{Window, WindowId},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowId}
 };
 
-use wgpu::util::DeviceExt;
+use wgpu::{SurfaceColorSpace::Auto, util::DeviceExt};
 
 
 // Event driven window handler for this application
@@ -41,6 +43,17 @@ impl ApplicationHandler for App {
         }
     }
 
+    // fn user_event(
+    //     &mut self,
+    //     _event_loop: &winit::event_loop::ActiveEventLoop,
+    //     event: anyhow::Result<(Display, D)>,
+    // ) {
+    //     let event = event.unwrap();
+    //     event.0.window.request_redraw();
+    //     self.demo = Some(event);
+    //     self.last_time = Instant::now();
+    // }
+
     fn window_event(
         &mut            self,
         event_loop:     &ActiveEventLoop,
@@ -60,19 +73,101 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                renderer.render();
-                // Emits a new redraw requested event.
+                // renderer.render();
+                // // Emits a new redraw requested event.
+                // window.request_redraw();
+                // state.update(); // do this in render()
+                match renderer.render() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Log the error and exit gracefully
+                        log::error!("{e}");
+                        event_loop.exit();
+                    }
+                }
                 window.request_redraw();
             }
             WindowEvent::Resized(size) => {
                 // Reconfigures the size of the surface. We do not re-render
                 // here as this event is always followed up by redraw request.
-                // gpu.resize(size);
                 renderer.resize(size);
-                // self.last_size = size;
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                renderer.inputs.handle_modifiers(modifiers.state());
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        physical_key: PhysicalKey::Code(key_code),
+                        state: key_state,
+                        ..
+                    },
+                ..
+            } => {
+                if matches!(key_code, winit::keyboard::KeyCode::Escape) {
+                    event_loop.exit();
+                } else {
+                    renderer.inputs.handle_key(key_state, key_code);
+                }
+            }
+
+            // this seems to be the only way to get the cursor position
+            // in winit 0.30, from here save the cursor for other events
+            WindowEvent::CursorMoved {
+                position, ..
+            } => {
+                let max_position = window.inner_size();
+                renderer.inputs.handle_cursor(max_position, position);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button,
+                ..
+            } => {
+                renderer.inputs.handle_mouse(state, button);
+            }
+
+            WindowEvent::MouseWheel {
+                delta,
+                phase,
+                ..
+            } => {
+                renderer.inputs.handle_pan(phase, delta);
+            }
+
+            WindowEvent::PinchGesture {
+                delta,
+                phase,
+                ..
+            } => {
+                renderer.inputs.handle_pinch(phase, delta);
+            }
+
+            // WindowEvent::PanGesture {
+            //     delta,
+            //     phase,
+            //     ..
+            // } => {
+            //     println!("{phase:?}, {delta:?}");
+            //     renderer.inputs.handle_pan(phase, delta);
+            // }
+
+            WindowEvent::RotationGesture {
+                delta,
+                phase,
+                ..
+            } => {
+                // println!("{phase:?}, {delta}");
+                renderer.inputs.handle_rotation(phase, delta);
+            }
+
             _ => (),
         }
+        //? window.request_redraw();
+    }
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        let Some(renderer) = self.renderer.as_mut() else { return; };
+        renderer.inputs.stats();
     }
 }
 
@@ -133,7 +228,13 @@ impl Gpu {
             present_mode: cap.present_modes[0],
             alpha_mode: cap.alpha_modes[0],
             desired_maximum_frame_latency: 2,
+            color_space: Auto,
         };
+        // print!("present_mode options = ");
+        // for present in cap.present_modes {
+        //     print!("{present:?}, ");
+        // }
+        // println!();
 
         surface.configure(&device, &surface_config);
  
@@ -179,9 +280,9 @@ impl Gpu {
 pub struct Renderer {
     gpu: Gpu,
     scene: Scene,
-    size: winit::dpi::PhysicalSize<u32>,
+    // size: winit::dpi::PhysicalSize<u32>,
+    inputs: uniform::InputHandler,
     // bindings: PipelineBindGroups,
-
     // depth_texture_view: wgpu::TextureView,
 }
 
@@ -197,15 +298,20 @@ impl Renderer {
         Self {
             gpu,
             scene,
-            size,
+            // size,
+            inputs: uniform::InputHandler::new(size),
             // bindings,
         }
     }
 
     fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-        self.size = size;
+        // self.size = size;
         self.gpu.resize(size);
-        self.scene.resize(&self.gpu.queue, size);
+        self.inputs.resize(
+            &self.gpu.queue,
+            &mut self.scene.uniforms,
+            size
+        );
     }
 
     // fn init_bindings(
@@ -231,6 +337,15 @@ impl Renderer {
         //     .get_current_texture()
         //     .expect("failed to acquire next swapchain texture");
         // self.scene.update(&self.gpu.queue);
+        // self.count += 1;
+        // let count = self.count;
+        // println!("count = {count}");
+
+        // inputhandler.handle_timer();
+        self.inputs.new_frame(
+            &self.gpu.queue,
+            &mut self.scene.uniforms
+        );
 
         let surface_texture = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) =>
@@ -297,21 +412,13 @@ impl Renderer {
         // Submit the command in the queue to execute
         self.gpu.queue.submit([encoder.finish()]);
         // self.gpu.window.pre_present_notify();
-        surface_texture.present();
+        //surface_texture.present();
+        self.gpu.queue.present(surface_texture);
 
         Ok(())
     }
 
 }
-
-// Should these be an enum in uniform.rs? No lookups needed.
-// Errors at compile time.
-const UNIFORMS: &str = "uniforms";
-// const SCALARS: &str = "scalars";
-// const TEXTURES: &str = "textures";
-
-const SCREEN_X: &str = "screen_x";
-const SCREEN_Y: &str = "screen_y";
 
 // static mut screen_x: u32 = 100;
 // static mut screen_y: u32 = 100;
@@ -319,13 +426,8 @@ const SCREEN_Y: &str = "screen_y";
 
 struct Scene {
     pub pipeline: wgpu::RenderPipeline,
+    pub uniforms: uniform::Uniform,
     // bind_groups: uniform::PipelineBindGroups<'a>,
-    screen_x: u32,
-    screen_y: u32,
-    x_buffer: wgpu::Buffer,
-    y_buffer: wgpu::Buffer,
-    uniform_group_layout: wgpu::BindGroupLayout,
-    uniform_group: wgpu::BindGroup,
 }
 
 impl Scene {
@@ -339,73 +441,14 @@ impl Scene {
         //  index buffer
         //  unifrom
         //  model
-        let screen_x = size.width;
-        let screen_y = size.height;
-
-        let x_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(SCREEN_X),
-            contents: bytemuck::cast_slice(&[screen_x]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let y_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(SCREEN_Y),
-            contents: bytemuck::cast_slice(&[screen_y]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let uniform_group_layout =
-            device.create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-                label: Some("uniform_group_layout"),
-            });
-
-        let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &uniform_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: x_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: y_buffer.as_entire_binding(),
-                },
-            ],
-            label: Some("uniform_group"),
-        });
-
+        let uniforms = uniform::Uniform::new(device, size);
         let pipeline = Self::create_pipeline(
-            device, surface_format, &uniform_group_layout);
+            device,
+            surface_format,
+            &uniforms.uniform_group_layout
+        );
         Self {
-            screen_x,
-            screen_y,
-            x_buffer,
-            y_buffer,
-            uniform_group_layout,
-            uniform_group,
+            uniforms,
             pipeline,
         }
     }
@@ -420,7 +463,7 @@ impl Scene {
         // print!("{}", pipeline_bind_groups.make_wgsl());
         renderpass.set_pipeline(&self.pipeline);
 //        pipeline_bind_groups.set_render_pass(device, renderpass);
-        renderpass.set_bind_group(0, &self.uniform_group, &[]);
+        renderpass.set_bind_group(0, &self.uniforms.uniform_group, &[]);
         // If you wanted to call any drawing commands, they would go here.
         renderpass.set_pipeline(&self.pipeline); // 2.
         renderpass.draw(0..6, 0..1); // 3.
@@ -434,24 +477,25 @@ impl Scene {
     }
 
     // fn update(&mut self) {
-    pub fn resize(
-        &mut self,
-        queue: &wgpu::Queue,
-        size: winit::dpi::PhysicalSize<u32>,
-    ) {
-        self.screen_x = size.width;
-        self.screen_y = size.height;
-        queue.write_buffer(
-            &self.x_buffer,
-            0,
-            bytemuck::cast_slice(&[self.screen_x])
-        );
-        queue.write_buffer(
-            &self.y_buffer,
-            0,
-            bytemuck::cast_slice(&[self.screen_y])
-        );
-    }
+    // pub fn resize(
+    //     &mut self,
+    //     queue: &wgpu::Queue,
+    //     size: winit::dpi::PhysicalSize<u32>,
+    // ) {
+    //     let uniforms = &mut self.uniforms;
+    //     uniforms.screen_x = size.width;
+    //     uniforms.screen_y = size.height;
+    //     queue.write_buffer(
+    //         &uniforms.x_buffer,
+    //         0,
+    //         bytemuck::cast_slice(&[uniforms.screen_x])
+    //     );
+    //     queue.write_buffer(
+    //         &uniforms.y_buffer,
+    //         0,
+    //         bytemuck::cast_slice(&[uniforms.screen_y])
+    //     );
+    // }
 
     // pub fn update(&mut self, queue: &wgpu::Queue, aspect_ratio: f32, delta_time: f32) {
     //     let projection =
@@ -480,7 +524,6 @@ impl Scene {
     fn create_pipeline(
         device: &wgpu::Device,
         surface_config: wgpu::TextureFormat,
-        // x_bind_group: &wgpu::BindGroup,
         uniform_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(
