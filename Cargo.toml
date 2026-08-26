@@ -8,6 +8,7 @@ anyhow = "1.0"
 bytemuck = { version = "1.12", features = [ "derive" ] }
 enum-map = "3.1.0"
 env_logger = "0.11.6"
+flume = "0.12.0"
 instant = "0.1.13"
 log = "0.4.33"
 nalgebra = "0.35"

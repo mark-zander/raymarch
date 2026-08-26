@@ -8,25 +8,39 @@
 var<uniform> screen_xy: vec2u;
 
 @group(0) @binding(1)
-var<uniform> transformer: mat4x4f;
-
-@group(0) @binding(2)
 var<uniform> timer: f32;
 
+// arrayLength(&transformer)
+@group(0) @binding(2)
+var<storage, read> transformer: array<mat4x4f>;
+
 @group(0) @binding(3)
-var<uniform> scale: f32;
+var<storage, read> scale: array<f32>;
 
-// @group(0) @binding(0)
-// var<uniform> screen_x: u32;
+@group(0) @binding(4)
+var<uniform> mouse_hit: u32;
 
-// @group(0) @binding(1)
-// var<uniform> screen_y: u32;
+@group(0) @binding(5)
+var<uniform> cursor_xy: vec2u;
 
-//////////////////////////////////////////////////////////////////////////
+@group(0) @binding(6)
+var<storage, read_write> node_id: u32;
+
+@group(0) @binding(7)
+var<uniform> mouse_pos: vec2u;
+
+const ID4X4F = mat4x4<f32>(
+  1.0, 0.0, 0.0, 0.0,
+  0.0, 1.0, 0.0, 0.0,
+  0.0, 0.0, 1.0, 0.0,
+  0.0, 0.0, 0.0, 1.0,
+);
+
+////////////////////////////////////////////////////////////////////
 //
 //  Vertex shader - normalizes screen coordinates in xy
 //
-//////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////
 
 struct VertexOutput {
     // screen position in pixels from upper left
@@ -77,12 +91,19 @@ fn vs_main(
     //     vec2f( 1.0,  1.0),
     // );
 
+    // node_trans[0] = transformer;
 
     var out: VertexOutput;
     out.position = vec4f(pos[index], 0.0, 1.0);
     out.xy = xy[index];
     return out;
 }
+
+////////////////////////////////////////////////////////////////////
+//
+//  Fragment shader - displays color for each pixel and shape
+//
+////////////////////////////////////////////////////////////////////
 
 const MAX_MARCHING_STEPS = 255;
 const MIN_DIST = 0.0;
@@ -91,20 +112,212 @@ const PRECISION = 0.001;
 const EPSILON = 0.0005;
 const TWOPI = 2 * 3.14159265359;
 
+// float rayMarch(vec3 ro, vec3 rd, float start, float end) {
+fn rayMarch(ro: vec3f, rd: vec3f, start: f32, end: f32) -> Surface {
+  var depth = start;
+  var surf: Surface;
+
+  for (var i = 0; i < MAX_MARCHING_STEPS; i++) {
+    let p = ro + depth * rd;
+    surf = theShape(p);
+    let d = surf.dist;
+    depth += d;
+    if d < PRECISION || depth > end { break; }
+  }
+
+  surf.dist = depth;
+
+  return surf;
+}
+
+// vec3 calcNormal(vec3 p) {
+fn calcNormal(p: vec3f) -> vec3f {
+    let e = vec2f(1.0, -1.0) * 0.0005; // epsilon
+    // let r = 1.; // radius of sphere
+    return normalize(
+      e.xyy * theShape(p + e.xyy).dist +
+      e.yyx * theShape(p + e.yyx).dist +
+      e.yxy * theShape(p + e.yxy).dist +
+      e.xxx * theShape(p + e.xxx).dist);
+}
+
+// Material could be returned using function argument pointers if
+// performance is an issue.
+struct Material {
+    color: vec4f,
+}
+
+struct Surface {
+    dist: f32,
+    node_id: u32,
+    material: Material,
+}
+
+const BLACK = Material(vec4f(0.0, 0.0, 0.0, 1.0)); 
+const RED = Material(vec4f(1.0, 0.0, 0.0, 1.0)); 
+const CYAN = Material(vec4f(0.0, 0.8, 0.8, 1.0));
+const ORANGE = Material(vec4f(1.0, 0.58, 0.29, 1.0));
+const BRIGHT_CYAN = Material(vec4f(0.835, 1.0, 1.0, 1.0));
+const BACKGROUND = BRIGHT_CYAN;
+
+// void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+  // let uv = (fragCoord-.5*iResolution.xy)/iResolution.y;
+  // let backgroundColor = vec3f(0.835, 1, 1);
+
+  var col = BACKGROUND.color;
+  let ro = vec3f(0, 0, 3); // ray origin that represents camera position
+  let rd = normalize(vec3(in.xy, -1)); // ray direction
+
+  let surf = rayMarch(ro, rd, MIN_DIST, MAX_DIST); // distance to shape
+  let d = surf.dist;
+  let pos = vec2u(u32(in.position.x), u32(in.position.y));
+
+  if (d > MAX_DIST) {
+    col = BACKGROUND.color; // ray didn't hit anything
+    if all(pos.xy == mouse_pos) { node_id = 0; }
+  } else {
+    let p = ro + rd * d; // point on sphere we discovered from ray marching
+    let normal = calcNormal(p);
+    let lightPosition = vec3f(2, 2, 7);
+    let lightDirection = normalize(lightPosition - p);
+
+    // Calculate diffuse reflection by taking the dot product of
+    // the normal and the light direction.
+    // let dif = clamp(dot(normal, lightDirection), 0.3, 1.);
+    let dif = clamp(dot(normal, lightDirection), 0.3, 1.);
+
+    // Multiply the diffuse reflection value by an orange color and add a bit
+    // of the background color to the sphere to blend it more with the background.
+    // col = dif * vec4(1, 0.58, 0.29, 1.0) + BACKGROUND.color * .2;
+    col = dif * surf.material.color + BACKGROUND.color * .2;
+    if node_id == surf.node_id {
+      col = dif * RED.color + BACKGROUND.color * .2;
+    }
+    if all(pos.xy == mouse_pos) { node_id = surf.node_id; }
+  }
+
+  // if all(pos.xy == mouse_pos) {
+  //   node_id = surf.node_id;
+  //   if node_id != 0 {
+  //     col = dif * RED.color + BACKGROUND.color * .2;
+  //   }
+  // }
+  // if all(pos.xy == cursor_xy) { node_id = surf.node_id; }
+
+  // Output to screen
+  return col;
+}
+
+fn theShape(p: vec3f) -> Surface {
+  let id = u32(0);
+  let p1 = trans(p, transformer[id]);
+  var bb = both_box(p1);
+  bb.dist = bb.dist * scale[id];
+  return bb;
+}
+
+// fn theShape(p: vec3f) -> Surface {
+//   return Surface(
+//     box(p, vec3(1.0, 0.5, 0.5)),
+//     0,
+//     ORANGE
+//   );
+// }
+
+// Rotate around x with theta = timer
+fn box_timer(p: vec3f) -> f32 {
+  let p1 = trans(p, rotx(timer));
+  return box(p1, vec3(1.0, 0.5, 0.5));
+}
+
+// fn box1(p: vec3f) -> f32 {
+//   let p1 = trans(p, transformer[1] * translate(1.0, 1.0, 0.0));
+//   return box(p1, vec3(1.0, 0.5, 0.5)) * scale[1];
+// }
+
+fn box1(p: vec3f) -> Surface {
+  let id = u32(1);
+  let p1 = trans(p, transformer[id] * translate(1.0, 1.0, 0.0));
+  return Surface(
+    box(p1, vec3(1.0, 0.5, 0.5)) * scale[id],
+    id,
+    ORANGE
+  );
+}
+
+// fn box2(p: vec3f) -> f32 {
+//   let p1 = trans(p, transformer[2] * translate(-1.0, -1.0, 0.0));
+//   return box(p1, vec3(1.0, 0.5, 0.5)) * scale[2];
+// }
+
+fn box2(p: vec3f) -> Surface {
+  let id = u32(2);
+  let p1 = trans(p, transformer[id] * translate(-1.0, -1.0, 0.0));
+  return Surface(
+    box(p1, vec3(1.0, 0.5, 0.5)) * scale[id],
+    id,
+    CYAN
+  );
+}
+
+fn both_box(p: vec3f) -> Surface {
+  return unions(box1(p), box2(p));
+}
+
+/////////////////////////////////////////////////
+
+fn unions(c1: Surface, c2: Surface) -> Surface {
+    if c1.dist < c2.dist { return c1; }
+    return c2;
+}
+
 // float sdSphere(vec3 p, float r )
-fn sdSphere(p: vec3f, r: f32) -> f32
-{
-  let offset = vec3f(0, 0, -2);
-  return length(p - offset) - r;
+fn sdSphere(p: vec3f, r: f32) -> f32 {
+  return length(p) - r;
 }
 
 // distance from a box
 fn box(p: vec3f, b: vec3f) -> f32 {
   let q = abs(p) - b;
-  // let zero = vec3(0.0);
   return length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
+// float sdPlane( vec3 p, vec3 n, float h )
+// {
+//   // n must be normalized
+//   return dot(p,n) + h;
+// }
+
+// fn sdCappedCylinder( vec3 p, float h, float r ) -> f32 {
+fn cappedCylinder(p: vec3f, h: f32, r: f32) -> f32 {
+  let d = abs(vec2(length(p.xz),p.y)) - vec2(r,h);
+  return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0)));
+}
+
+// Union without the material
+fn mind(c1: f32, c2: f32) -> f32 {
+    if c1 < c2 { return c1; }
+    return c2;
+}
+
+// Intersection without the material
+fn maxd(c1: f32, c2: f32) -> f32 {
+    if c1 > c2 { return c1; }
+    return c2;
+}
+
+// Subtract without the material
+fn minusd(c1: f32, c2: f32) -> f32 {
+    if -c1 > c2 { return -c1; }
+    return c2;
+}
+
+// Invert without the material
+fn negd(c1: f32) -> f32 { return -c1; }
+
+// Will transformations typically take place in the cpu?
 // transform point by a matrix
 fn trans(p: vec3f, m: mat4x4<f32>) -> vec3f {
     return (m * vec4(p, 1.0)).xyz;
@@ -171,107 +384,3 @@ fn scaling(s: f32) -> mat4x4f {
     );
 }
 
-// Rotate around x with theta = timer
-fn shape7(p: vec3f) -> f32 {
-  let s = 0.5;
-  let p1 = trans(p, scaling(s));
-  return box(p1, vec3(1.0, 0.5, 0.5)) * s;
-}
-
-// Rotate around x with theta = timer
-fn shape6(p: vec3f) -> f32 {
-  let p1 = trans(p, rotx(timer));
-  return box(p1, vec3(1.0, 0.5, 0.5));
-}
-
-// Rotate around y with theta = timer
-fn shape5(p: vec3f) -> f32 {
-  let p1 = trans(p, roty(timer));
-  return box(p1, vec3(1.0, 0.5, 0.5));
-}
-
-// Rotate around z with theta = timer
-fn shape4(p: vec3f) -> f32 {
-  let p1 = trans(p, rotz(timer));
-  return box(p1, vec3(1.0, 0.5, 0.5));
-}
-
-// Use transformer from cpu
-fn shape3(p: vec3f) -> f32 {
-  let p1 = trans(p, transformer);
-  return box(p1, vec3(1.0, 0.5, 0.5)) * scale;
-}
-
-// Rotate and then translate a box
-fn shape2(p: vec3f) -> f32 {
-  // let p1 = trans(p, translate(1.0, 0.0, 0.0) * rotz(0.125 * TWOPI));
-  let p1 = trans(p, rotz(0.125 * TWOPI) * translate(1.0, 0.0, 0.0));
-  return box(p1, vec3(1.0, 0.5, 0.5));
-}
-
-// Translate and then rotate a box
-fn shape1(p: vec3f) -> f32 {
-  let p1 = trans(p, translate(1.0, 0.0, 0.0) * rotz(0.125 * TWOPI));
-  // let p1 = trans(p, rotz(0.125 * TWOPI) * translate(1.0, 0.0, 0.0));
-  return box(p1, vec3(1.0, 0.5, 0.5));
-}
-
-fn theShape(p: vec3f) -> f32 { return shape3(p); }
-
-// float rayMarch(vec3 ro, vec3 rd, float start, float end) {
-fn rayMarch(ro: vec3f, rd: vec3f, start: f32, end: f32) -> f32 {
-  var depth = start;
-
-  for (var i = 0; i < MAX_MARCHING_STEPS; i++) {
-    let p = ro + depth * rd;
-    let d = theShape(p);
-    depth += d;
-    if d < PRECISION || depth > end { break; }
-  }
-
-  return depth;
-}
-
-// vec3 calcNormal(vec3 p) {
-fn calcNormal(p: vec3f) -> vec3f {
-    let e = vec2f(1.0, -1.0) * 0.0005; // epsilon
-    // let r = 1.; // radius of sphere
-    return normalize(
-      e.xyy * theShape(p + e.xyy) +
-      e.yyx * theShape(p + e.yyx) +
-      e.yxy * theShape(p + e.yxy) +
-      e.xxx * theShape(p + e.xxx));
-}
-
-// void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  // let uv = (fragCoord-.5*iResolution.xy)/iResolution.y;
-  let backgroundColor = vec3f(0.835, 1, 1);
-
-  var col = vec3f(0);
-  let ro = vec3f(0, 0, 3); // ray origin that represents camera position
-  let rd = normalize(vec3(in.xy, -1)); // ray direction
-
-  let d = rayMarch(ro, rd, MIN_DIST, MAX_DIST); // distance to sphere
-
-  if (d > MAX_DIST) {
-    col = backgroundColor; // ray didn't hit anything
-  } else {
-    let p = ro + rd * d; // point on sphere we discovered from ray marching
-    let normal = calcNormal(p);
-    let lightPosition = vec3f(2, 2, 7);
-    let lightDirection = normalize(lightPosition - p);
-
-    // Calculate diffuse reflection by taking the dot product of
-    // the normal and the light direction.
-    let dif = clamp(dot(normal, lightDirection), 0.3, 1.);
-
-    // Multiply the diffuse reflection value by an orange color and add a bit
-    // of the background color to the sphere to blend it more with the background.
-    col = dif * vec3(1, 0.58, 0.29) + backgroundColor * .2;
-  }
-
-  // Output to screen
-  return vec4(col, 1.0);
-}

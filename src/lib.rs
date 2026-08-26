@@ -1,6 +1,9 @@
 use std::sync::Arc;
-pub mod uniform;
+// pub mod uniform;
+pub mod buffer;
+pub mod inputs;
 
+use pollster::FutureExt;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -116,8 +119,7 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved {
                 position, ..
             } => {
-                let max_position = window.inner_size();
-                renderer.inputs.handle_cursor(max_position, position);
+                renderer.inputs.handle_cursor(position);
             }
             WindowEvent::MouseInput {
                 state,
@@ -281,7 +283,7 @@ pub struct Renderer {
     gpu: Gpu,
     scene: Scene,
     // size: winit::dpi::PhysicalSize<u32>,
-    inputs: uniform::InputHandler,
+    inputs: inputs::InputHandler,
     // bindings: PipelineBindGroups,
     // depth_texture_view: wgpu::TextureView,
 }
@@ -299,7 +301,7 @@ impl Renderer {
             gpu,
             scene,
             // size,
-            inputs: uniform::InputHandler::new(size),
+            inputs: inputs::InputHandler::new(size),
             // bindings,
         }
     }
@@ -409,8 +411,16 @@ impl Renderer {
         // End the renderpass.
         drop(renderpass);
 
+        // Initiate transfers from gpu
+        self.scene.uniforms.node_id.initiate_from_gpu(&mut encoder);
+
         // Submit the command in the queue to execute
         self.gpu.queue.submit([encoder.finish()]);
+
+        // Retrieve/wait for transfers from gpu
+        self.scene.uniforms.node_id
+        .get_from_gpu(&self.gpu.device).block_on().unwrap();
+        
         // self.gpu.window.pre_present_notify();
         //surface_texture.present();
         self.gpu.queue.present(surface_texture);
@@ -426,7 +436,7 @@ impl Renderer {
 
 struct Scene {
     pub pipeline: wgpu::RenderPipeline,
-    pub uniforms: uniform::Uniform,
+    pub uniforms: inputs::Uniforms,
     // bind_groups: uniform::PipelineBindGroups<'a>,
 }
 
@@ -441,11 +451,11 @@ impl Scene {
         //  index buffer
         //  unifrom
         //  model
-        let uniforms = uniform::Uniform::new(device, size);
+        let uniforms = inputs::Uniforms::new(device, size);
         let pipeline = Self::create_pipeline(
             device,
             surface_format,
-            &uniforms.uniform_group_layout
+            &uniforms.group.layout,
         );
         Self {
             uniforms,
@@ -463,7 +473,7 @@ impl Scene {
         // print!("{}", pipeline_bind_groups.make_wgsl());
         renderpass.set_pipeline(&self.pipeline);
 //        pipeline_bind_groups.set_render_pass(device, renderpass);
-        renderpass.set_bind_group(0, &self.uniforms.uniform_group, &[]);
+        renderpass.set_bind_group(0, &self.uniforms.group.bind, &[]);
         // If you wanted to call any drawing commands, they would go here.
         renderpass.set_pipeline(&self.pipeline); // 2.
         renderpass.draw(0..6, 0..1); // 3.

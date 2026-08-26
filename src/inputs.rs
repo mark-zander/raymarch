@@ -13,12 +13,17 @@ use instant::{Duration, Instant};
 use std::{f32::consts::TAU};
 extern crate nalgebra as na;
 
+use crate::buffer::*;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vec2u ( [u32; 2] );
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vec2f ( [f32; 2] );
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Vec4f ( [f32; 4] );
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Mat4x4f ( [[f32; 4]; 4] );
@@ -60,15 +65,6 @@ const ID4X4F: Mat4x4f =
         [0.0, 0.0, 0.0, 1.0],
     ]);
 
-// fn ident() -> Matrix4f {
-//     Matrix4f::new(
-//         1.0, 0.0, 0.0, 0.0,
-//         0.0, 1.0, 0.0, 0.0,
-//         0.0, 0.0, 1.0, 0.0,
-//         0.0, 0.0, 0.0, 1.0,
-//     )
-// }
-
 // Two structs that are tightly coupled. InputHandler takes input
 // from WindowEvents and processes it for struct Uniform that then
 // passes the data to the GPU.
@@ -88,9 +84,11 @@ pub struct InputHandler {
     mouse_button: MouseButton,
     mouse_state: ElementState,
     mouse_hit: u32,
+    mouse_pos: Vec2u,
     cursor: Vec2u,
-    transformer: Matrix4f,
-    scale: f32,
+    transformer: Vec<Matrix4f>,
+    scale: Vec<f32>,
+    node_id: usize,
 }
 
 impl InputHandler {
@@ -107,39 +105,30 @@ impl InputHandler {
             mouse_button: MouseButton::Other(0),
             mouse_state: ElementState::Released,
             mouse_hit: 0,
+            mouse_pos: Vec2u([0, 0]),
             cursor: Vec2u([0, 0]),
-            transformer: Matrix4f::identity(),
-            scale: 1.0,
+            transformer: vec!(Matrix4f::identity(); 4),
+            scale: vec!(1.0; 4),
+            node_id: 0,
         }
     }
     pub fn new_frame(
         &mut self,
         queue: &wgpu::Queue,
-        uniforms: &mut Uniform
+        uniforms: &mut Uniforms
     ) {
         self.frame_count += 1;
         self.duration = self.start_time.elapsed();
-        uniforms.timer.data[0] = self.duration.as_secs_f32();
-
-        // self.transformer = Matrix4f::from_axis_angle(
-        //     &Vector3::z_axis(), TAU / 8.0
-        // );
-        // self.transformer = translate(Vector3f::new(2.0, 0.0, 0.0));
-        // let a_scale = 0.5;
-        // self.transformer = scale(a_scale);
-        // if self.frame_count == 1 {
-        //     println!("scale = {}", self.scale);
-        //     println!("{}", self.transformer);
-        //     match self.transformer.try_inverse() {
-        //         Some(inverse) => println!("{}", inverse),
-        //         None => {}
-        //     }
-        // }
-
-        uniforms.scale.data[0] = self.scale;
-        uniforms.mouse_hit.data[0] = self.mouse_hit;
-        uniforms.cursor.data[0] = self.cursor;
-        uniforms.transformer.data[0].0 = self.transformer.data.0;
+        self.node_id = uniforms.node_id.data as usize;
+        uniforms.timer.data = self.duration.as_secs_f32();
+        // uniforms.scale.data.0[self.node_id] = self.scale[self.node_id];
+        uniforms.scale.data[self.node_id] = self.scale[self.node_id];
+        uniforms.mouse_hit.data = self.mouse_hit;
+        uniforms.mouse_pos.data = self.mouse_pos;
+        uniforms.cursor.data = self.cursor;
+        uniforms.transformer.data[self.node_id].0 =
+            self.transformer[self.node_id].data.0;
+        // uniforms.node_id.data = self.node_id as u32;
         uniforms.update(queue);
     }
     // Currently prints out the time stats, should it return them?
@@ -152,18 +141,14 @@ impl InputHandler {
             frames per second = {frames_sec}"
         );
     }
-    // pub fn set_screen(&mut self, screen: winit::dpi::PhysicalSize<u32>) {
-    //     self.screen = Vec2u([screen.width, screen.height]);
-    // }
-    // pub fn get_screen(&self) -> Vec2u  { self.screen }
     pub fn resize(
         &mut self,
         queue: &wgpu::Queue,
-        uniforms: &mut Uniform,
+        uniforms: &mut Uniforms,
         size: winit::dpi::PhysicalSize<u32>,
     ) {
         self.screen = Vec2u([size.width, size.height]);
-        uniforms.screen_xy.data[0] = self.screen;
+        uniforms.screen_xy.data = self.screen;
         uniforms.resize(queue);
     }
     pub fn handle_modifiers(
@@ -183,25 +168,32 @@ impl InputHandler {
                 let delta = TAU / 60.0;
                 match key_code {
                     KeyCode::ArrowUp => {
-                        self.transformer *= Matrix4f::from_axis_angle(
+                        self.transformer[self.node_id] *=
+                        Matrix4f::from_axis_angle(
                             &Vector3::x_axis(), delta
                         );
                     }
                     KeyCode::ArrowDown => {
-                        self.transformer *= Matrix4f::from_axis_angle(
+                        self.transformer[self.node_id] *=
+                        Matrix4f::from_axis_angle(
                             &Vector3::x_axis(), -delta
                         );
                     }
                     KeyCode::ArrowLeft => {
-                        self.transformer *= Matrix4f::from_axis_angle(
+                        self.transformer[self.node_id] *=
+                        Matrix4f::from_axis_angle(
                             &Vector3::y_axis(), delta
                         );
                     }
                     KeyCode::ArrowRight => {
-                        self.transformer *= Matrix4f::from_axis_angle(
+                        self.transformer[self.node_id] *=
+                        Matrix4f::from_axis_angle(
                             &Vector3::y_axis(), -delta
                         );
                     }
+                    KeyCode::Digit0 => { self.node_id = 0; }
+                    KeyCode::Digit1 => { self.node_id = 1; }
+                    KeyCode::Digit2 => { self.node_id = 2; }
                     _ => (),
                 }
             }
@@ -212,12 +204,6 @@ impl InputHandler {
         &mut self,
         position: PhysicalPosition<f64>
     ) {
-        // let xs = self.screen.0[0] as f32;
-        // let ys = self.screen.0[1] as f32;
-        // let xp = position.x as f32;
-        // let yp = position.y as f32;
-        // let x = (2.0 * xp - xs) / ys;
-        // let y = -2.0 * yp / ys + 1.0;
         self.cursor = Vec2u([position.x as u32, position.y as u32]);
     }
     pub fn handle_mouse(
@@ -228,8 +214,11 @@ impl InputHandler {
         match button {
             MouseButton::Left => {
                 self.mouse_hit = match state {
-                    ElementState::Pressed => 1,
                     ElementState::Released => 0,
+                    ElementState::Pressed => {
+                        self.mouse_pos = self.cursor;
+                        1
+                    },
                 }
             }
             _ => (),
@@ -239,20 +228,13 @@ impl InputHandler {
             self.mouse_hit, self.cursor, self.screen
         );
     }
-        // let ratio = self.screen.0[0] as f32 / self.screen.0[1] as f32;
-            // let cursor = self.cursor;
-            // println!("{ratio}");
-            // println!(
-            //     "{cursor:?}, state = {state:?}, button = {button:?}"
-            // );
-
-            pub fn handle_pinch(&mut self, phase: TouchPhase, delta: f64) {
+    pub fn handle_pinch(&mut self, phase: TouchPhase, delta: f64) {
         if delta.is_finite() {
             let a_scale = 1.0 + delta as f32;
             // println!("{phase:?}, {a_scale}");
             if phase == TouchPhase::Moved {
-                self.transformer *= scale(a_scale);
-                self.scale *= a_scale;
+                self.transformer[self.node_id] *= scale(a_scale);
+                self.scale[self.node_id] *= a_scale;
             }
         }
     }
@@ -271,19 +253,21 @@ impl InputHandler {
                 )
             };
             // println!("x = {x}, y = {y}");
-            self.transformer *= translate(Vector3f::new(x, y, 0.0));
+            self.transformer[self.node_id] *=
+            translate(Vector3f::new(x, y, 0.0));
         }
     }
     pub fn handle_rotation(&mut self, phase: TouchPhase, delta: f32) {
         if phase == TouchPhase::Moved {
-            self.transformer *= Matrix4f::from_axis_angle(
+            self.transformer[self.node_id] *=
+            Matrix4f::from_axis_angle(
                 &Vector3::z_axis(), -delta
             );
         }
     }
 }
 
-const UNIFORMS: &str = "uniforms";
+// const UNIFORMS: &str = "uniforms";
 const SCREEN_XY: &str = "screen_xy";
 const TRANSFORMER: &str = "transformer";
 const SCALE: &str = "scale";
@@ -291,171 +275,78 @@ const TIMER: &str = "timer";
 const MOUSE_HIT: &str = "mouse_hit";
 const CURSOR: &str = "cursor";
 const NODE_ID: &str = "node_id";
+const MOUSE_POS: &str = "mouse_pos";
+const INPUT_UNIFORMS: &str = "input_uniforms";
 
-// Takes data supplied by inputs and passes it on to the GPU.
-const SIMPLE_LAYOUT: wgpu::BindGroupLayoutEntry =
-wgpu::BindGroupLayoutEntry{
-    binding: 0,
-    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-    ty: wgpu::BindingType::Buffer {
-        ty: wgpu::BufferBindingType::Uniform,
-        has_dynamic_offset: false,
-        min_binding_size: None,
-    },
-    count: None,
-};
-
-fn uniform_usage() -> wgpu::BufferUsages {
-    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST
+pub struct Uniforms {
+    pub screen_xy: BufferPod<Vec2u>,
+    pub timer: BufferPod<f32>,
+    pub transformer: BufferVec<Mat4x4f>,
+    // pub scale: BufferPod<Vec4f>,
+    pub scale: BufferVec<f32>,
+    pub mouse_hit: BufferPod<u32>,
+    pub cursor: BufferPod<Vec2u>,
+    pub node_id: BufferPodW<u32>,
+    pub mouse_pos: BufferPod<Vec2u>,
+    pub group: Group,
 }
 
-pub struct Auniform<T>
-where
-    T: Copy + bytemuck::Pod + bytemuck::Zeroable,
-{
-    pub name: String,
-    pub n_bind: u32,
-    pub data: Vec<T>,
-    pub bufr: wgpu::Buffer,
-}
-
-impl<T: Copy + bytemuck::Pod + bytemuck::Zeroable> Auniform<T> {
-    fn new(
-        device: &wgpu::Device,
-        name: &str,
-        n_bind: u32,
-        data: Vec<T>,
-    ) -> Self {
-        let bufr = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some(name),
-                contents: bytemuck::cast_slice(&data),
-                usage: uniform_usage(),
-            }
-        );
-        Self {
-            name: name.to_string(),
-            n_bind,
-            data,
-            bufr,
-        }
-    }
-
-    // fn from_parts(
-    //     name: String, n_bind: u32, data: Vec<T>, bufr: wgpu::Buffer
-    // ) -> Self {
-    //     Self { name, n_bind, data, bufr }
-    // }
-
-    fn layout(&self) -> wgpu::BindGroupLayoutEntry {
-        wgpu::BindGroupLayoutEntry {
-            binding: self.n_bind,
-            ..SIMPLE_LAYOUT
-        }
-    }
-    fn bind(&self) -> wgpu::BindGroupEntry<'_> {
-        wgpu::BindGroupEntry {
-            binding: self.n_bind,
-            resource: self.bufr.as_entire_binding(),
-        }
-    }
-    fn update(
-        &mut self,
-        queue: &wgpu::Queue,
-    ) {
-        // let uniforms = &mut self.uniforms;
-        queue.write_buffer(
-            &self.bufr,
-            0,
-            bytemuck::cast_slice(&self.data)
-        );
-    }
-}
-
-pub struct Uniform {
-    pub screen_xy: Auniform<Vec2u>,
-    pub transformer: Auniform<Mat4x4f>,
-    pub timer: Auniform<f32>,
-    pub scale: Auniform<f32>,
-    pub mouse_hit: Auniform<u32>,
-    pub cursor: Auniform<Vec2u>,
-    pub node_id: Auniform<u32>,
-    pub uniform_group_layout: wgpu::BindGroupLayout,
-    pub uniform_group: wgpu::BindGroup,
-}
-
-impl Uniform {
+impl Uniforms {
     pub fn new(
         device: &wgpu::Device,
         size: &winit::dpi::PhysicalSize<u32>,
     ) -> Self {
         let data = Vec2u([size.width, size.height]);
-        let screen_xy = Auniform::<Vec2u>::new(
-            device, SCREEN_XY, 0, vec![data]
+        let screen_xy = BufferPod::<Vec2u>::new(
+            device, SCREEN_XY, 0, data, &UNIFORM_SET
         );
-        // let data = Mat4x4f([
-        //     [1.0, 0.0, 0.0, 0.0],
-        //     [0.0, 1.0, 0.0, 0.0],
-        //     [0.0, 0.0, 1.0, 0.0],
-        //     [0.0, 0.0, 0.0, 1.0],
-        // ]);
-        let transformer = Auniform::<Mat4x4f>::new(
-            device, TRANSFORMER, 1, vec![ID4X4F]
+        let timer = BufferPod::<f32>::new(
+            device, TIMER, 1, 0.0, &UNIFORM_SET
         );
-        let timer = Auniform::<f32>::new(
-            device, TIMER, 2, vec![0.0]
+        let data = vec!(ID4X4F; 4);
+        let transformer = BufferVec::<Mat4x4f>::new(
+            device, TRANSFORMER, 2, data, &STORAGE_SET_R
         );
-        let scale = Auniform::<f32>::new(
-            device, SCALE, 3, vec![1.0]
+        let scale = BufferVec::<f32>::new(
+            device, SCALE, 3, vec!(1.0; 4), &STORAGE_SET_R
         );
-        let mouse_hit = Auniform::<u32>::new(
-            device, MOUSE_HIT, 4, vec![0]
+        let mouse_hit = BufferPod::<u32>::new(
+            device, MOUSE_HIT, 4, 0, &UNIFORM_SET
         );
-        let cursor = Auniform::<Vec2u>::new(
-            device, CURSOR, 5, vec![Vec2u([0, 0])]
+        let cursor = BufferPod::<Vec2u>::new(
+            device, CURSOR, 5, Vec2u([0, 0]), &UNIFORM_SET
         );
-        let node_id = Auniform::<u32>::new(
-            device, NODE_ID, 6, vec![0]
+        let node_id = BufferPodW::<u32>::new(
+            device, NODE_ID, 6, 0, &STORAGE_SET_RW
         );
-        let uniform_group_layout =
-            device.create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    screen_xy.layout(),
-                    transformer.layout(),
-                    timer.layout(),
-                    scale.layout(),
-                    mouse_hit.layout(),
-                    cursor.layout(),
-                    node_id.layout(),
-                ],
-                label: Some(&format!("{UNIFORMS}_group")),
-            });
-
-        let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &uniform_group_layout,
-            entries: &[
-                screen_xy.bind(),
-                transformer.bind(),
-                timer.bind(),
-                scale.bind(),
-                mouse_hit.bind(),
-                cursor.bind(),
-                node_id.bind(),
-            ],
-            label: Some(UNIFORMS),
-        });
+        let mouse_pos = BufferPod::<Vec2u>::new(
+            device, MOUSE_POS, 7, Vec2u([0, 0]), &UNIFORM_SET
+        );
+        let group = Group::new(
+            device,
+            INPUT_UNIFORMS,
+            &[
+                &screen_xy.bufr,
+                &timer.bufr,
+                &transformer.bufr,
+                &scale.bufr,
+                &mouse_hit.bufr,
+                &cursor.bufr,
+                &node_id.bufr,
+                &mouse_pos.bufr,
+            ]
+        );
 
         Self {
             screen_xy,
-            transformer,
             timer,
+            transformer,
             scale,
             mouse_hit,
             cursor,
             node_id,
-            uniform_group_layout,
-            uniform_group,
+            mouse_pos,
+            group,
         }
     }
     pub fn resize(
@@ -469,8 +360,10 @@ impl Uniform {
         &mut self,
         queue: &wgpu::Queue,
     ) {
-        self.transformer.update(queue);
         self.timer.update(queue);
+        self.transformer.update(queue);
         self.scale.update(queue);
+        self.mouse_pos.update(queue);
+        // self.node_id.update(queue);
     }
 }
