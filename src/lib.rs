@@ -19,9 +19,22 @@ use wgpu::{SurfaceColorSpace::Auto, util::DeviceExt};
 // Event driven window handler for this application
 #[derive(Default)]
 pub struct App {
+    title: String,
+    wgsl: String,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    // last_size: winit::dpi::PhysicalSize<u32>,
+}
+
+impl App {
+    pub fn new(program: &str, file: &str, wgsl: String) -> Self {
+        let title = format!("{}: {}", program, file);
+        Self {
+            title,
+            wgsl,
+            window: None,
+            renderer: None,
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -29,7 +42,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Create window object
         let mut attributes = Window::default_attributes();
-        attributes = attributes.with_title("Title");
+        attributes = attributes.with_title(&self.title);
 
         if let Ok(window) = event_loop.create_window(attributes) {
             let window_handle = Arc::new(window);
@@ -39,7 +52,7 @@ impl ApplicationHandler for App {
             // env_logger::init();
 
             let renderer = pollster::block_on(
-                Renderer::new(window_handle.clone())
+                Renderer::new(window_handle.clone(), &self.wgsl)
             );
             self.renderer = Some(renderer);
 
@@ -289,14 +302,14 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>, wgsl: &String) -> Self {
         let size = window.inner_size();
         let gpu = Gpu::new(window).await;
         // let mut bindings = PipelineBindGroups::new(BINDINGS);
         // Self::init_bindings(&mut bindings, &size, &gpu.device);
         let scene = Scene::new(
 //            &gpu.device, gpu.surface_format, &mut bindings);
-            &gpu.device, gpu.surface_format, &size);
+            &gpu.device, gpu.surface_format, &size, wgsl);
         Self {
             gpu,
             scene,
@@ -445,6 +458,7 @@ impl Scene {
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
         size: &winit::dpi::PhysicalSize<u32>,
+        wgsl: &String,
         // bindings: &mut PipelineBindGroups,
     ) -> Self {
         //  vertex buffer
@@ -456,6 +470,7 @@ impl Scene {
             device,
             surface_format,
             &uniforms.group.layout,
+            wgsl
         );
         Self {
             uniforms,
@@ -486,58 +501,27 @@ impl Scene {
         // renderpass.draw_indexed(0..(INDICES.len() as _), 0, 0..1);
     }
 
-    // fn update(&mut self) {
-    // pub fn resize(
-    //     &mut self,
-    //     queue: &wgpu::Queue,
-    //     size: winit::dpi::PhysicalSize<u32>,
-    // ) {
-    //     let uniforms = &mut self.uniforms;
-    //     uniforms.screen_x = size.width;
-    //     uniforms.screen_y = size.height;
-    //     queue.write_buffer(
-    //         &uniforms.x_buffer,
-    //         0,
-    //         bytemuck::cast_slice(&[uniforms.screen_x])
-    //     );
-    //     queue.write_buffer(
-    //         &uniforms.y_buffer,
-    //         0,
-    //         bytemuck::cast_slice(&[uniforms.screen_y])
-    //     );
-    // }
-
-    // pub fn update(&mut self, queue: &wgpu::Queue, aspect_ratio: f32, delta_time: f32) {
-    //     let projection =
-    //         nalgebra_glm::perspective_lh_zo(aspect_ratio, 80_f32.to_radians(), 0.1, 1000.0);
-    //     let view = nalgebra_glm::look_at_lh(
-    //         &nalgebra_glm::vec3(0.0, 0.0, 3.0),
-    //         &nalgebra_glm::vec3(0.0, 0.0, 0.0),
-    //         &nalgebra_glm::Vec3::y(),
-    //     );
-    //     self.model = nalgebra_glm::rotate(
-    //         &self.model,
-    //         30_f32.to_radians() * delta_time,
-    //         &nalgebra_glm::Vec3::y(),
-    //     );
-    //     self.uniform.update_buffer(
-    //         queue,
-    //         0,
-    //         UniformBuffer {
-    //             mvp: projection * view * self.model,
-    //         },
-    //     );
-    // }
-
     //  The layouts of PipelineBindGroups are set here
     //  The layouts are around longer than the values!
     fn create_pipeline(
         device: &wgpu::Device,
         surface_config: wgpu::TextureFormat,
         uniform_group_layout: &wgpu::BindGroupLayout,
+        wgsl: &String,
     ) -> wgpu::RenderPipeline {
+        // let shader = device.create_shader_module(
+        //     wgpu::include_wgsl!("shader.wgsl"));
         let shader = device.create_shader_module(
-            wgpu::include_wgsl!("shader.wgsl"));
+            wgpu::ShaderModuleDescriptor {
+                label: Some("Shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    format!("{}\n{}",
+                        include_str!("shape_lib.wgsl"),
+                        wgsl
+                    ).into()
+                ),
+            }
+        );
 
 //        let render_pipeline_layout =
 //              pipeline_bind_groups.pipeline_layout(device);

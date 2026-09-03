@@ -1,3 +1,5 @@
+use std::env;
+use std::fs;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -6,6 +8,13 @@ use winit::{
 };
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let prog = &args[0];
+    let file = &args[1];
+    println!("In file {file}");
+    let wgsl = fs::read_to_string(file)
+        .expect("Should have been able to read the file");
+    // println!("With text:\n{wgsl}");
     // wgpu uses `log` for all of our logging, so we initialize a logger with the `env_logger` crate.
     //
     // To change the log level, set the `RUST_LOG` environment variable. See the `env_logger`
@@ -26,6 +35,6 @@ fn main() {
     // the background.
     // event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = raymarch::App::default();
+    let mut app = raymarch::App::new(&prog, &file, wgsl);
     event_loop.run_app(&mut app).unwrap();
 }
